@@ -94,6 +94,9 @@ Mat<float> matMatMult_GPU_threadBlock2x2(Mat<float> const& a, Mat<float> const& 
 template <size_t BLOCK_WIDTH, size_t MoreWork>
 Mat<float> matMatMult_GPU_threadBlock2x2_moreWork(Mat<float> const& m1, Mat<float> const& m2);
 
+template <size_t TILE_WIDTH, size_t MoreWork>
+Mat<float> matMatMult_GPU_threadBlock1x2_moreWork(Mat<float> const& m1, Mat<float> const& m2);
+
 // #define test_func(info, func, m1, m2, refRes)          \
 //     { \
 //     { \
@@ -162,19 +165,21 @@ int main(int argc, char** argv)
     }
 
     test_func("GPU tiled 32:", matMatMult_GPU_tiled<float, 32>, m1, m2, res1);
-    // test_func("GPU tiled 64:", matMatMult_GPU_tiled<float, 64>, m1, m2, res1); // error: invalid configuration argument
     test_func("GPU more work x1:", matMatMult_GPU_moreWork<float, 32, 1>, m1, m2, res1);
     test_func("GPU more work x2:", matMatMult_GPU_moreWork<float, 32, 2>, m1, m2, res1);
     test_func("GPU more work x4:", matMatMult_GPU_moreWork<float, 32, 4>, m1, m2, res1);
     test_func("GPU more work x8:", matMatMult_GPU_moreWork<float, 32, 8>, m1, m2, res1);
-    test_func("GPU tiled 8 thread block 2x2:", matMatMult_GPU_threadBlock2x2<8>, m1, m2, res1);
     test_func("GPU tiled 16 thread block 2x2:", matMatMult_GPU_threadBlock2x2<16>, m1, m2, res1);
     test_func("GPU tiled 32 thread block 2x2:", matMatMult_GPU_threadBlock2x2<32>, m1, m2, res1);
+    test_func("GPU tiled 64 thread block 2x2:", matMatMult_GPU_threadBlock2x2<64>, m1, m2, res1);
     
-    test_func("GPU tiled 16 thread block 2x2 more work x2:", matMatMult_GPU_threadBlock2x2_moreWork<16, 2>, m1, m2, res1);
-    test_func("GPU tiled 16 thread block 2x2 more work x4:", matMatMult_GPU_threadBlock2x2_moreWork<16, 4>, m1, m2, res1);
-    test_func("GPU tiled 16 thread block 2x2 more work x8:", matMatMult_GPU_threadBlock2x2_moreWork<16, 8>, m1, m2, res1);
-    // test_func("GPU thread block 2x2:", matMatMult_GPU_threadBlock2x2<64>, m1, m2, res1); // compile error: uses too much shared data
+    test_func("GPU tiled 32 thread block 2x2 more work x2:", matMatMult_GPU_threadBlock2x2_moreWork<32, 2>, m1, m2, res1);
+    test_func("GPU tiled 32 thread block 2x2 more work x4:", matMatMult_GPU_threadBlock2x2_moreWork<32, 4>, m1, m2, res1);
+    test_func("GPU tiled 32 thread block 2x2 more work x8:", matMatMult_GPU_threadBlock2x2_moreWork<32, 8>, m1, m2, res1);
+
+    test_func("GPU tiled 32 thread block 1x2 more work x2:", matMatMult_GPU_threadBlock1x2_moreWork<32, 2>, m1, m2, res1);
+    test_func("GPU tiled 32 thread block 1x2 more work x4:", matMatMult_GPU_threadBlock1x2_moreWork<32, 4>, m1, m2, res1);
+    test_func("GPU tiled 32 thread block 1x2 more work x8:", matMatMult_GPU_threadBlock1x2_moreWork<32, 8>, m1, m2, res1);
 }
 
 template <typename T>
@@ -501,37 +506,36 @@ Mat<T> matMatMult_GPU_moreWork(Mat<T> const& m1, Mat<T> const& m2)
 
 
 // single precision only
-template <size_t BLOCK_WIDTH>
+template <size_t TILE_WIDTH>
 __global__
 void matMatMultKernel_GPU_threadBlock2x2(float const* __restrict a, float const* __restrict b,
                                          float* __restrict c, size_t ni, size_t nk, size_t nj)
 {
-    // one thread owns a 2x2 block of c
-    size_t const BLOCK_WIDTH_2 = BLOCK_WIDTH * 2;
-    // __shared__ float aTile[BLOCK_WIDTH * 2][BLOCK_WIDTH * 2];
-    // __shared__ float bTile[BLOCK_WIDTH * 2][BLOCK_WIDTH * 2];    
-    __shared__ float2 aTile[BLOCK_WIDTH_2][BLOCK_WIDTH];
-    __shared__ float2 bTile[BLOCK_WIDTH_2][BLOCK_WIDTH];
+    // one thread owns a 2x2 block of c   
+    // __shared__ float aTile[TILE_WIDTH][TILE_WIDTH];
+    // __shared__ float bTile[TILE_WIDTH][TILE_WIDTH];    
+    __shared__ float2 aTile[TILE_WIDTH][TILE_WIDTH/2];
+    __shared__ float2 bTile[TILE_WIDTH][TILE_WIDTH/2];
 
     int by = blockIdx.y;
     int bx = blockIdx.x;
     int ty = threadIdx.y;
     int tx = threadIdx.x;
-    int row = 2 * (by * BLOCK_WIDTH + ty);
-    int col = 2 * (bx * BLOCK_WIDTH + tx);
+    int row = by * TILE_WIDTH + 2 * ty;
+    int col = bx * TILE_WIDTH + 2 * tx;
 
     // one thread will generate four results
     float2 cLine1 = {0.0f, 0.0f};
     float2 cLine2 = {0.0f, 0.0f};
-    for (int ph = 0; ph < (int)ceil((float)nk / BLOCK_WIDTH_2); ++ph) {
+    for (int ph = 0; ph < (int)ceil((float)nk / TILE_WIDTH); ++ph) {
         // load aTile and bTile
         // too much branch...
         // load aTile:
         if (row < ni) {
-            if (2*(ph * BLOCK_WIDTH + tx) + 1 < nk) {
-                aTile[ty * 2][tx] = *reinterpret_cast<float2 const*>(&a[row * nk + 2*(ph * BLOCK_WIDTH + tx)]); // a[row][2*(ph * BLOCK_WIDTH + tx)]
-            } else if (2*(ph * BLOCK_WIDTH + tx) < nk) {
-                aTile[ty * 2][tx] = {a[row * nk + 2*(ph * BLOCK_WIDTH + tx)], 0.0f};
+            if (ph * TILE_WIDTH + 2 * tx + 1 < nk) {
+                aTile[ty * 2][tx] = *reinterpret_cast<float2 const*>(&a[row * nk + ph * TILE_WIDTH + 2 * tx]); // a[row][2*(ph * TILE_WIDTH + tx)]
+            } else if (ph * TILE_WIDTH + 2 * tx < nk) {
+                aTile[ty * 2][tx] = {a[row * nk + ph * TILE_WIDTH + 2 * tx], 0.0f};
             } else {
                 aTile[ty * 2][tx] = {0.0f, 0.0f};
             }            
@@ -540,10 +544,10 @@ void matMatMultKernel_GPU_threadBlock2x2(float const* __restrict a, float const*
         }
         
         if (row + 1 < ni) {
-            if (2*(ph * BLOCK_WIDTH + tx) + 1 < nk) {
-                aTile[ty * 2 + 1][tx] = *reinterpret_cast<float2 const*>(&a[(row + 1) * nk + 2*(ph * BLOCK_WIDTH + tx)]); // a[row + 1][2*(ph * BLOCK_WIDTH+tx)];
-            } else if (2*(ph * BLOCK_WIDTH + tx) < nk) {
-                aTile[ty * 2 + 1][tx] = {a[(row + 1) * nk + 2*(ph * BLOCK_WIDTH + tx)], 0.0f};
+            if (ph * TILE_WIDTH + tx * 2 + 1 < nk) {
+                aTile[ty * 2 + 1][tx] = *reinterpret_cast<float2 const*>(&a[(row + 1) * nk + ph * TILE_WIDTH + tx * 2]); // a[row + 1][2*(ph * TILE_WIDTH+tx)];
+            } else if (2*(ph * TILE_WIDTH + tx) < nk) {
+                aTile[ty * 2 + 1][tx] = {a[(row + 1) * nk + ph * TILE_WIDTH + tx * 2], 0.0f};
             } else {
                 aTile[ty * 2 + 1][tx] = {0.0f, 0.0f};
             }
@@ -552,11 +556,11 @@ void matMatMultKernel_GPU_threadBlock2x2(float const* __restrict a, float const*
         }
 
         // load bTile:
-        if (2*(ph * BLOCK_WIDTH + ty) < nk) {
+        if (ph * TILE_WIDTH + ty * 2 < nk) {
             if (col + 1 < nj) {
-                bTile[ty * 2][tx] = *reinterpret_cast<float2 const*>(&b[2*(ph * BLOCK_WIDTH + ty) * nj + col]); // b[2*(ph * BLOCK_WIDTH + ty)][col]
+                bTile[ty * 2][tx] = *reinterpret_cast<float2 const*>(&b[(ph * TILE_WIDTH + ty * 2) * nj + col]); // b[2*(ph * TILE_WIDTH + ty)][col]
             } else if (col < nj) {
-                bTile[ty * 2][tx] = {b[2*(ph * BLOCK_WIDTH + ty) * nj + col], 0.0f};
+                bTile[ty * 2][tx] = {b[(ph * TILE_WIDTH + ty * 2) * nj + col], 0.0f};
             } else {
                 bTile[ty * 2][tx] = {0.0f, 0.0f};
             }                
@@ -564,11 +568,11 @@ void matMatMultKernel_GPU_threadBlock2x2(float const* __restrict a, float const*
             bTile[ty * 2][tx] = {0.0f, 0.0f};
         }
 
-        if (2*(ph * BLOCK_WIDTH + ty) + 1 < nk) {
+        if (ph * TILE_WIDTH + ty * 2 + 1 < nk) {
             if (col + 1 < nj) {
-                bTile[ty * 2 + 1][tx] = *reinterpret_cast<float2 const*>(&b[(2*(ph * BLOCK_WIDTH + ty) + 1) * nj + col]); // b[2*(ph * BLOCK_WIDTH + ty) + 1][col];
+                bTile[ty * 2 + 1][tx] = *reinterpret_cast<float2 const*>(&b[(ph * TILE_WIDTH + ty * 2 + 1) * nj + col]); // b[2*(ph * TILE_WIDTH + ty) + 1][col];
             } else if (col < nj) {
-                bTile[ty * 2 + 1][tx] = {b[(2*(ph * BLOCK_WIDTH + ty) + 1) * nj + col], 0.0f};
+                bTile[ty * 2 + 1][tx] = {b[(ph * TILE_WIDTH + ty * 2 + 1) * nj + col], 0.0f};
             } else {
                 bTile[ty * 2 + 1][tx] = {0.0f, 0.0f};
             }                
@@ -579,7 +583,7 @@ void matMatMultKernel_GPU_threadBlock2x2(float const* __restrict a, float const*
         
         __syncthreads();
 
-        for (int k = 0; k < BLOCK_WIDTH; ++k) {
+        for (int k = 0; k < TILE_WIDTH / 2; ++k) {
             // a[row][2*k] a[row][2*k+1] a[row+1][2*k] a[row+1][2*k+1]
             // b[2*k][col] b[2*k][col+1] b[2*k+1][col] b[2*k+1][col+1]
             cLine1.x += aTile[2*ty][k].x * bTile[2*k][tx].x + aTile[2*ty][k].y * bTile[2*k+1][tx].x;
@@ -605,7 +609,7 @@ void matMatMultKernel_GPU_threadBlock2x2(float const* __restrict a, float const*
     }
 }
 
-template <size_t BLOCK_WIDTH>
+template <size_t TILE_WIDTH>
 Mat<float> matMatMult_GPU_threadBlock2x2(Mat<float> const& m1, Mat<float> const& m2)
 {
     if (m1.cols() != m2.rows()) {
@@ -648,12 +652,12 @@ Mat<float> matMatMult_GPU_threadBlock2x2(Mat<float> const& m1, Mat<float> const&
         std::exit(1);
     }
 
-    double p = BLOCK_WIDTH * 2;
-    dim3 dimBlock(BLOCK_WIDTH, BLOCK_WIDTH, 1);
+    double p = TILE_WIDTH;
+    dim3 dimBlock(TILE_WIDTH/2, TILE_WIDTH/2, 1);
     dim3 dimGrid(ceil(res.cols() / p),
                  ceil(res.rows() / p), 1);
     auto start = std::chrono::system_clock::now();
-    matMatMultKernel_GPU_threadBlock2x2<BLOCK_WIDTH><<<dimGrid, dimBlock>>>(d_m1, d_m2, d_res, m1.rows(), m1.cols(), m2.cols());
+    matMatMultKernel_GPU_threadBlock2x2<TILE_WIDTH><<<dimGrid, dimBlock>>>(d_m1, d_m2, d_res, m1.rows(), m1.cols(), m2.cols());
     cudaDeviceSynchronize();
     auto end = std::chrono::system_clock::now();
     fmt::print(stderr, "kernel only time: {}\n", std::chrono::duration<double>(end-start).count());
@@ -676,25 +680,24 @@ Mat<float> matMatMult_GPU_threadBlock2x2(Mat<float> const& m1, Mat<float> const&
 }
 
 
-template <size_t BLOCK_WIDTH, size_t MoreWork>
+template <size_t TILE_WIDTH, size_t MoreWork>
 __global__
 void matMatMultKernel_GPU_threadBlock2x2_moreWork(float const* __restrict a, float const* __restrict b,
                                                   float* __restrict c, size_t ni, size_t nk, size_t nj)
 {
     // one thread owns a 2x2 block of c
-    size_t const BLOCK_WIDTH_2 = BLOCK_WIDTH * 2;
-    // __shared__ float aTile[BLOCK_WIDTH * 2][BLOCK_WIDTH * 2];
-    // __shared__ float bTile[BLOCK_WIDTH * 2][BLOCK_WIDTH * 2];
-    __shared__ float2 aTile[BLOCK_WIDTH_2][BLOCK_WIDTH+1];
-    __shared__ float2 bTile[MoreWork][BLOCK_WIDTH_2][BLOCK_WIDTH+1];
+    // __shared__ float aTile[TILE_WIDTH][TILE_WIDTH];
+    // __shared__ float bTile[TILE_WIDTH][TILE_WIDTH];
+    __shared__ float2 aTile[TILE_WIDTH][TILE_WIDTH/2+1];
+    __shared__ float2 bTile[MoreWork][TILE_WIDTH][TILE_WIDTH/2];
 
     int by = blockIdx.y;
     int bx = blockIdx.x;
     int ty = threadIdx.y;
     int tx = threadIdx.x;
-    int row = 2 * (by * BLOCK_WIDTH + ty);
-    // int col = 2 * (bx * BLOCK_WIDTH + tx); // col, col + BLOCK_WIDTH_2, col + 2*BLOCK_WIDTH_2, ...
-    int col = bx * MoreWork * BLOCK_WIDTH_2 + 2 * tx;
+    int row = by * TILE_WIDTH + ty * 2;
+    // int col = bx * TILE_WIDTH + tx * 2; // col, col + TILE_WIDTH, col + 2*TILE_WIDTH, ...
+    int col = bx * MoreWork * TILE_WIDTH + 2 * tx;
 
     // one thread will generate four results
     float2 cLine1[MoreWork];
@@ -705,15 +708,15 @@ void matMatMultKernel_GPU_threadBlock2x2_moreWork(float const* __restrict a, flo
         cLine2[i] = {0.0f, 0.0f};
     }
     
-    for (int ph = 0; ph < (int)ceil((float)nk / BLOCK_WIDTH_2); ++ph) {
+    for (int ph = 0; ph < (int)ceil((float)nk / TILE_WIDTH); ++ph) {
         // load aTile and bTile
         // too much branch...
         // load aTile:
         if (row < ni) {
-            if (2*(ph * BLOCK_WIDTH + tx) + 1 < nk) {
-                aTile[ty * 2][tx] = *reinterpret_cast<float2 const*>(&a[row * nk + 2*(ph * BLOCK_WIDTH + tx)]); // a[row][2*(ph * BLOCK_WIDTH + tx)]
-            } else if (2*(ph * BLOCK_WIDTH + tx) < nk) {
-                aTile[ty * 2][tx] = {a[row * nk + 2*(ph * BLOCK_WIDTH + tx)], 0.0f};
+            if (ph * TILE_WIDTH + tx * 2 + 1 < nk) {
+                aTile[ty * 2][tx] = *reinterpret_cast<float2 const*>(&a[row * nk + ph * TILE_WIDTH + tx * 2]); // a[row][2*(ph * TILE_WIDTH + tx)]
+            } else if (ph * TILE_WIDTH + tx * 2 < nk) {
+                aTile[ty * 2][tx] = {a[row * nk + ph * TILE_WIDTH + tx * 2], 0.0f};
             } else {
                 aTile[ty * 2][tx] = {0.0f, 0.0f};
             }            
@@ -722,10 +725,10 @@ void matMatMultKernel_GPU_threadBlock2x2_moreWork(float const* __restrict a, flo
         }
         
         if (row + 1 < ni) {
-            if (2*(ph * BLOCK_WIDTH + tx) + 1 < nk) {
-                aTile[ty * 2 + 1][tx] = *reinterpret_cast<float2 const*>(&a[(row + 1) * nk + 2*(ph * BLOCK_WIDTH + tx)]); // a[row + 1][2*(ph * BLOCK_WIDTH+tx)];
-            } else if (2*(ph * BLOCK_WIDTH + tx) < nk) {
-                aTile[ty * 2 + 1][tx] = {a[(row + 1) * nk + 2*(ph * BLOCK_WIDTH + tx)], 0.0f};
+            if (ph * TILE_WIDTH + tx * 2 + 1 < nk) {
+                aTile[ty * 2 + 1][tx] = *reinterpret_cast<float2 const*>(&a[(row + 1) * nk + ph * TILE_WIDTH + tx * 2]); // a[row + 1][2*(ph * TILE_WIDTH+tx)];
+            } else if (ph * TILE_WIDTH + tx * 2 < nk) {
+                aTile[ty * 2 + 1][tx] = {a[(row + 1) * nk + ph * TILE_WIDTH + tx * 2], 0.0f};
             } else {
                 aTile[ty * 2 + 1][tx] = {0.0f, 0.0f};
             }
@@ -736,11 +739,11 @@ void matMatMultKernel_GPU_threadBlock2x2_moreWork(float const* __restrict a, flo
         #pragma unroll
         for (int mw = 0; mw < MoreWork; ++mw) {
             // load bTile:
-            if (2*(ph * BLOCK_WIDTH + ty) < nk) {
-                if (col + mw * BLOCK_WIDTH_2 + 1 < nj) {
-                    bTile[mw][ty * 2][tx] = *reinterpret_cast<float2 const*>(&b[2*(ph * BLOCK_WIDTH + ty) * nj + col + mw * BLOCK_WIDTH_2]); // b[2*(ph * BLOCK_WIDTH + ty)][col]
-                } else if (col + mw * BLOCK_WIDTH_2 < nj) {
-                    bTile[mw][ty * 2][tx] = {b[2*(ph * BLOCK_WIDTH + ty) * nj + col + mw * BLOCK_WIDTH_2], 0.0f};
+            if (ph * TILE_WIDTH + ty * 2 < nk) {
+                if (col + mw * TILE_WIDTH + 1 < nj) {
+                    bTile[mw][ty * 2][tx] = *reinterpret_cast<float2 const*>(&b[(ph * TILE_WIDTH + ty * 2) * nj + col + mw * TILE_WIDTH]); // b[2*(ph * TILE_WIDTH + ty)][col]
+                } else if (col + mw * TILE_WIDTH < nj) {
+                    bTile[mw][ty * 2][tx] = {b[(ph * TILE_WIDTH + ty * 2) * nj + col + mw * TILE_WIDTH], 0.0f};
                 } else {
                     bTile[mw][ty * 2][tx] = {0.0f, 0.0f};
                 }                
@@ -748,11 +751,11 @@ void matMatMultKernel_GPU_threadBlock2x2_moreWork(float const* __restrict a, flo
                 bTile[mw][ty * 2][tx] = {0.0f, 0.0f};
             }
 
-            if (2*(ph * BLOCK_WIDTH + ty) + 1 < nk) {
-                if (col + mw * BLOCK_WIDTH_2 + 1 < nj) {
-                    bTile[mw][ty * 2 + 1][tx] = *reinterpret_cast<float2 const*>(&b[(2*(ph * BLOCK_WIDTH + ty) + 1) * nj + col + mw * BLOCK_WIDTH_2]); // b[2*(ph * BLOCK_WIDTH + ty) + 1][col];
-                } else if (col + mw * BLOCK_WIDTH_2 < nj) {
-                    bTile[mw][ty * 2 + 1][tx] = {b[(2*(ph * BLOCK_WIDTH + ty) + 1) * nj + col + mw * BLOCK_WIDTH_2], 0.0f};
+            if (ph * TILE_WIDTH + ty * 2 + 1 < nk) {
+                if (col + mw * TILE_WIDTH + 1 < nj) {
+                    bTile[mw][ty * 2 + 1][tx] = *reinterpret_cast<float2 const*>(&b[(ph * TILE_WIDTH + ty * 2 + 1) * nj + col + mw * TILE_WIDTH]); // b[2*(ph * TILE_WIDTH + ty) + 1][col];
+                } else if (col + mw * TILE_WIDTH < nj) {
+                    bTile[mw][ty * 2 + 1][tx] = {b[(ph * TILE_WIDTH + ty * 2 + 1) * nj + col + mw * TILE_WIDTH], 0.0f};
                 } else {
                     bTile[mw][ty * 2 + 1][tx] = {0.0f, 0.0f};
                 }
@@ -766,7 +769,7 @@ void matMatMultKernel_GPU_threadBlock2x2_moreWork(float const* __restrict a, flo
 
         #pragma unroll
         for (int mw = 0; mw < MoreWork; ++mw) {
-            for (int k = 0; k < BLOCK_WIDTH; ++k) {
+            for (int k = 0; k < TILE_WIDTH / 2; ++k) {
                 // a[row][2*k] a[row][2*k+1] a[row+1][2*k] a[row+1][2*k+1]
                 // b[2*k][col] b[2*k][col+1] b[2*k+1][col] b[2*k+1][col+1]
                 cLine1[mw].x += aTile[2*ty][k].x * bTile[mw][2*k][tx].x + aTile[2*ty][k].y * bTile[mw][2*k+1][tx].x;
@@ -782,21 +785,21 @@ void matMatMultKernel_GPU_threadBlock2x2_moreWork(float const* __restrict a, flo
     #pragma unroll
     for (int mw = 0; mw < MoreWork; ++mw) {
         // c[row][col]
-        if (row < ni && col + mw * BLOCK_WIDTH_2 + 1 < nj) {
-            *reinterpret_cast<float2*>(&c[row * nj + col + mw * BLOCK_WIDTH_2]) = cLine1[mw];
-        } else if (row < ni && col + mw * BLOCK_WIDTH_2 < nj) {
-            c[row * nj + col + mw * BLOCK_WIDTH_2] = cLine1[mw].x;
+        if (row < ni && col + mw * TILE_WIDTH + 1 < nj) {
+            *reinterpret_cast<float2*>(&c[row * nj + col + mw * TILE_WIDTH]) = cLine1[mw];
+        } else if (row < ni && col + mw * TILE_WIDTH < nj) {
+            c[row * nj + col + mw * TILE_WIDTH] = cLine1[mw].x;
         }
 
-        if (row + 1 < ni && col + mw * BLOCK_WIDTH_2 + 1 < nj) {
-            *reinterpret_cast<float2*>(&c[(row + 1) * nj + col + mw * BLOCK_WIDTH_2]) = cLine2[mw];
-        } else if (row + 1 < ni && col + mw * BLOCK_WIDTH_2 < nj) {
-            c[(row + 1) * nj + col + mw * BLOCK_WIDTH_2] = cLine2[mw].x;
+        if (row + 1 < ni && col + mw * TILE_WIDTH + 1 < nj) {
+            *reinterpret_cast<float2*>(&c[(row + 1) * nj + col + mw * TILE_WIDTH]) = cLine2[mw];
+        } else if (row + 1 < ni && col + mw * TILE_WIDTH < nj) {
+            c[(row + 1) * nj + col + mw * TILE_WIDTH] = cLine2[mw].x;
         }
     }
 }
 
-template <size_t BLOCK_WIDTH, size_t MoreWork>
+template <size_t TILE_WIDTH, size_t MoreWork>
 Mat<float> matMatMult_GPU_threadBlock2x2_moreWork(Mat<float> const& m1, Mat<float> const& m2)
 {
     if (m1.cols() != m2.rows()) {
@@ -839,12 +842,12 @@ Mat<float> matMatMult_GPU_threadBlock2x2_moreWork(Mat<float> const& m1, Mat<floa
         std::exit(1);
     }
 
-    double p = BLOCK_WIDTH * 2;
-    dim3 dimBlock(BLOCK_WIDTH, BLOCK_WIDTH, 1);
+    double p = TILE_WIDTH;
+    dim3 dimBlock(TILE_WIDTH/2, TILE_WIDTH/2, 1);
     dim3 dimGrid(std::ceil(std::ceil(res.cols() / p) / MoreWork),
                  std::ceil(res.rows() / p), 1);
     auto start = std::chrono::system_clock::now();
-    matMatMultKernel_GPU_threadBlock2x2_moreWork<BLOCK_WIDTH, MoreWork><<<dimGrid, dimBlock>>>(d_m1, d_m2, d_res, m1.rows(), m1.cols(), m2.cols());
+    matMatMultKernel_GPU_threadBlock2x2_moreWork<TILE_WIDTH, MoreWork><<<dimGrid, dimBlock>>>(d_m1, d_m2, d_res, m1.rows(), m1.cols(), m2.cols());
     cudaDeviceSynchronize();
     auto end = std::chrono::system_clock::now();
     fmt::print(stderr, "kernel only time: {}\n", std::chrono::duration<double>(end-start).count());
@@ -866,103 +869,75 @@ Mat<float> matMatMult_GPU_threadBlock2x2_moreWork(Mat<float> const& m1, Mat<floa
     return res;
 }
 
-template <size_t BLOCK_WIDTH, size_t MoreWork>
+
+template <size_t TILE_WIDTH, size_t MoreWork>
 __global__
 void matMatMultKernel_GPU_threadBlock1x2_moreWork(float const* __restrict a, float const* __restrict b,
                                                   float* __restrict c, size_t ni, size_t nk, size_t nj)
 {
-    // one thread owns a 1x2 block of c
-    size_t const BLOCK_WIDTH_2 = BLOCK_WIDTH * 2;
-    // __shared__ float aTile[BLOCK_WIDTH * 2][BLOCK_WIDTH * 2];
-    // __shared__ float bTile[BLOCK_WIDTH * 2][BLOCK_WIDTH * 2];
-    __shared__ float2 aTile[BLOCK_WIDTH_2][BLOCK_WIDTH+1];
-    __shared__ float2 bTile[MoreWork][BLOCK_WIDTH_2][BLOCK_WIDTH+1];
+    // one thread owns a 2x1 block of c
+    // __shared__ float aTile[TILE_WIDTH][TILE_WIDTH];
+    // __shared__ float bTile[TILE_WIDTH][TILE_WIDTH];
+    __shared__ float2 aTile[TILE_WIDTH][TILE_WIDTH/2 + 1];
+    __shared__ float2 bTile[MoreWork][TILE_WIDTH][TILE_WIDTH/2];
 
     int by = blockIdx.y;
     int bx = blockIdx.x;
     int ty = threadIdx.y;
     int tx = threadIdx.x;
-    int row = 2 * (by * BLOCK_WIDTH + ty);
-    // int col = 2 * (bx * BLOCK_WIDTH + tx); // col, col + BLOCK_WIDTH_2, col + 2*BLOCK_WIDTH_2, ...
-    int col = bx * MoreWork * BLOCK_WIDTH_2 + 2 * tx;
+    int row = by * TILE_WIDTH + ty;
+    // int col = bx * TILE_WIDTH + tx * 2; // col, col + TILE_WIDTH, col + 2*TILE_WIDTH, ...
+    int col = bx * MoreWork * TILE_WIDTH + 2 * tx;
 
     // one thread will generate four results
-    float2 cLine1[MoreWork];
-    float2 cLine2[MoreWork];
+    float2 cLine[MoreWork];
     #pragma unroll
     for (int i = 0; i < MoreWork; ++i) {
-        cLine1[i] = {0.0f, 0.0f};
-        cLine2[i] = {0.0f, 0.0f};
+        cLine[i] = {0.0f, 0.0f};
     }
     
-    for (int ph = 0; ph < (int)ceil((float)nk / BLOCK_WIDTH_2); ++ph) {
+    for (int ph = 0; ph < (int)ceil((float)nk / TILE_WIDTH); ++ph) {
         // load aTile and bTile
         // too much branch...
         // load aTile:
         if (row < ni) {
-            if (2*(ph * BLOCK_WIDTH + tx) + 1 < nk) {
-                aTile[ty * 2][tx] = *reinterpret_cast<float2 const*>(&a[row * nk + 2*(ph * BLOCK_WIDTH + tx)]); // a[row][2*(ph * BLOCK_WIDTH + tx)]
-            } else if (2*(ph * BLOCK_WIDTH + tx) < nk) {
-                aTile[ty * 2][tx] = {a[row * nk + 2*(ph * BLOCK_WIDTH + tx)], 0.0f};
+            if (ph * TILE_WIDTH + tx * 2 + 1 < nk) {
+                aTile[ty][tx] = *reinterpret_cast<float2 const*>(&a[row * nk + ph * TILE_WIDTH + tx * 2]);
+            } else if (ph * TILE_WIDTH + tx * 2 < nk) {
+                aTile[ty][tx] = {a[row * nk + ph * TILE_WIDTH + tx * 2], 0.0f};
             } else {
-                aTile[ty * 2][tx] = {0.0f, 0.0f};
+                aTile[ty][tx] = {0.0f, 0.0f};
             }            
         } else {
-            aTile[ty * 2][tx] = {0.0f, 0.0f};
+            aTile[ty][tx] = {0.0f, 0.0f};
         }
-        
-        if (row + 1 < ni) {
-            if (2*(ph * BLOCK_WIDTH + tx) + 1 < nk) {
-                aTile[ty * 2 + 1][tx] = *reinterpret_cast<float2 const*>(&a[(row + 1) * nk + 2*(ph * BLOCK_WIDTH + tx)]); // a[row + 1][2*(ph * BLOCK_WIDTH+tx)];
-            } else if (2*(ph * BLOCK_WIDTH + tx) < nk) {
-                aTile[ty * 2 + 1][tx] = {a[(row + 1) * nk + 2*(ph * BLOCK_WIDTH + tx)], 0.0f};
-            } else {
-                aTile[ty * 2 + 1][tx] = {0.0f, 0.0f};
-            }
-        } else {
-            aTile[ty * 2 + 1][tx] = {0.0f, 0.0f};
-        }
-        
+                
         #pragma unroll
         for (int mw = 0; mw < MoreWork; ++mw) {
             // load bTile:
-            if (2*(ph * BLOCK_WIDTH + ty) < nk) {
-                if (col + mw * BLOCK_WIDTH_2 + 1 < nj) {
-                    bTile[mw][ty * 2][tx] = *reinterpret_cast<float2 const*>(&b[2*(ph * BLOCK_WIDTH + ty) * nj + col + mw * BLOCK_WIDTH_2]); // b[2*(ph * BLOCK_WIDTH + ty)][col]
-                } else if (col + mw * BLOCK_WIDTH_2 < nj) {
-                    bTile[mw][ty * 2][tx] = {b[2*(ph * BLOCK_WIDTH + ty) * nj + col + mw * BLOCK_WIDTH_2], 0.0f};
+            if (ph * TILE_WIDTH + ty < nk) {
+                if (col + mw * TILE_WIDTH + 1 < nj) {
+                    bTile[mw][ty][tx] = *reinterpret_cast<float2 const*>(&b[(ph * TILE_WIDTH + ty) * nj + col + mw * TILE_WIDTH]); // b[2*(ph * TILE_WIDTH + ty)][col]
+                } else if (col + mw * TILE_WIDTH < nj) {
+                    bTile[mw][ty][tx] = {b[(ph * TILE_WIDTH + ty) * nj + col + mw * TILE_WIDTH], 0.0f};
                 } else {
-                    bTile[mw][ty * 2][tx] = {0.0f, 0.0f};
+                    bTile[mw][ty][tx] = {0.0f, 0.0f};
                 }                
             } else {
-                bTile[mw][ty * 2][tx] = {0.0f, 0.0f};
+                bTile[mw][ty][tx] = {0.0f, 0.0f};
             }
 
-            if (2*(ph * BLOCK_WIDTH + ty) + 1 < nk) {
-                if (col + mw * BLOCK_WIDTH_2 + 1 < nj) {
-                    bTile[mw][ty * 2 + 1][tx] = *reinterpret_cast<float2 const*>(&b[(2*(ph * BLOCK_WIDTH + ty) + 1) * nj + col + mw * BLOCK_WIDTH_2]); // b[2*(ph * BLOCK_WIDTH + ty) + 1][col];
-                } else if (col + mw * BLOCK_WIDTH_2 < nj) {
-                    bTile[mw][ty * 2 + 1][tx] = {b[(2*(ph * BLOCK_WIDTH + ty) + 1) * nj + col + mw * BLOCK_WIDTH_2], 0.0f};
-                } else {
-                    bTile[mw][ty * 2 + 1][tx] = {0.0f, 0.0f};
-                }
-
-            } else {
-                bTile[mw][ty * 2 + 1][tx] = {0.0f, 0.0f};
-            }
         }
         
         __syncthreads();
 
         #pragma unroll
         for (int mw = 0; mw < MoreWork; ++mw) {
-            for (int k = 0; k < BLOCK_WIDTH; ++k) {
-                // a[row][2*k] a[row][2*k+1] a[row+1][2*k] a[row+1][2*k+1]
-                // b[2*k][col] b[2*k][col+1] b[2*k+1][col] b[2*k+1][col+1]
-                cLine1[mw].x += aTile[2*ty][k].x * bTile[mw][2*k][tx].x + aTile[2*ty][k].y * bTile[mw][2*k+1][tx].x;
-                cLine1[mw].y += aTile[2*ty][k].x * bTile[mw][2*k][tx].y + aTile[2*ty][k].y * bTile[mw][2*k+1][tx].y;
-                cLine2[mw].x += aTile[2*ty+1][k].x * bTile[mw][2*k][tx].x + aTile[2*ty+1][k].y * bTile[mw][2*k+1][tx].x;
-                cLine2[mw].y += aTile[2*ty+1][k].x * bTile[mw][2*k][tx].y + aTile[2*ty+1][k].y * bTile[mw][2*k+1][tx].y;
+            
+            for (int k = 0; k < TILE_WIDTH / 2; ++k) {
+                // aTile[ty][k].{x,y} & bTile[2*k{,+1}][tx].{x,y}
+                cLine[mw].x += aTile[ty][k].x * bTile[mw][2*k][tx].x + aTile[ty][k].y * bTile[mw][2*k+1][tx].x;
+                cLine[mw].y += aTile[ty][k].x * bTile[mw][2*k][tx].y + aTile[ty][k].y * bTile[mw][2*k+1][tx].y;
             }
         }
 
@@ -972,21 +947,15 @@ void matMatMultKernel_GPU_threadBlock1x2_moreWork(float const* __restrict a, flo
     #pragma unroll
     for (int mw = 0; mw < MoreWork; ++mw) {
         // c[row][col]
-        if (row < ni && col + mw * BLOCK_WIDTH_2 + 1 < nj) {
-            *reinterpret_cast<float2*>(&c[row * nj + col + mw * BLOCK_WIDTH_2]) = cLine1[mw];
-        } else if (row < ni && col + mw * BLOCK_WIDTH_2 < nj) {
-            c[row * nj + col + mw * BLOCK_WIDTH_2] = cLine1[mw].x;
-        }
-
-        if (row + 1 < ni && col + mw * BLOCK_WIDTH_2 + 1 < nj) {
-            *reinterpret_cast<float2*>(&c[(row + 1) * nj + col + mw * BLOCK_WIDTH_2]) = cLine2[mw];
-        } else if (row + 1 < ni && col + mw * BLOCK_WIDTH_2 < nj) {
-            c[(row + 1) * nj + col + mw * BLOCK_WIDTH_2] = cLine2[mw].x;
+        if (row < ni && col + mw * TILE_WIDTH + 1 < nj) {
+            *reinterpret_cast<float2*>(&c[row * nj + col + mw * TILE_WIDTH]) = cLine[mw];
+        } else if (row < ni && col + mw * TILE_WIDTH < nj) {
+            c[row * nj + col + mw * TILE_WIDTH] = cLine[mw].x;
         }
     }
 }
 
-template <size_t BLOCK_WIDTH, size_t MoreWork>
+template <size_t TILE_WIDTH, size_t MoreWork>
 Mat<float> matMatMult_GPU_threadBlock1x2_moreWork(Mat<float> const& m1, Mat<float> const& m2)
 {
     if (m1.cols() != m2.rows()) {
@@ -1029,12 +998,12 @@ Mat<float> matMatMult_GPU_threadBlock1x2_moreWork(Mat<float> const& m1, Mat<floa
         std::exit(1);
     }
 
-    double p = BLOCK_WIDTH * 2;
-    dim3 dimBlock(BLOCK_WIDTH, BLOCK_WIDTH, 1);
+    double p = TILE_WIDTH;
+    dim3 dimBlock(TILE_WIDTH/2, TILE_WIDTH, 1);
     dim3 dimGrid(std::ceil(std::ceil(res.cols() / p) / MoreWork),
                  std::ceil(res.rows() / p), 1);
     auto start = std::chrono::system_clock::now();
-    matMatMultKernel_GPU_threadBlock2x2_moreWork<BLOCK_WIDTH, MoreWork><<<dimGrid, dimBlock>>>(d_m1, d_m2, d_res, m1.rows(), m1.cols(), m2.cols());
+    matMatMultKernel_GPU_threadBlock1x2_moreWork<TILE_WIDTH, MoreWork><<<dimGrid, dimBlock>>>(d_m1, d_m2, d_res, m1.rows(), m1.cols(), m2.cols());
     cudaDeviceSynchronize();
     auto end = std::chrono::system_clock::now();
     fmt::print(stderr, "kernel only time: {}\n", std::chrono::duration<double>(end-start).count());
