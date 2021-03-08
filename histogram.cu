@@ -180,5 +180,8 @@ std::vector<int> histogram_GPU(std::vector<char> const& text)
     err = cudaMemcpy(histo.data(), d_histo, sizeof(int) * histo.size(), cudaMemcpyDeviceToHost);
     checkCudaError(err);
 
+	cudaFree(d_histo);
+	cudaFree(d_text);
+
     return histo;
 }
