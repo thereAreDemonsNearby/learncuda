@@ -24,6 +24,12 @@ struct MergeKernel_tiled
     void operator()(T const* __restrict__ a, int m, T const* __restrict__ b, int n, T* c);
 };
 
+struct MergeKernel_tiled_circular
+{
+    template <typename T>
+    void operator()(T const* __restrict__ a, int m, T const* __restrict__ b, int n, T* c);
+}
+
 template <typename T>
 __device__
 __host__
@@ -58,7 +64,7 @@ int main(int argc, char** argv)
     }
     // return 0;
 
-    std::vector<int> c1(M + N), c2(M+N), c3(M+N);
+    std::vector<int> c1(M + N), c2(M+N), c3(M+N), c4(M+N);
 
     {
         TimerGuard t("merge cpu:");
@@ -81,6 +87,14 @@ int main(int argc, char** argv)
         merge_GPU<int, MergeKernel_tiled>(a.data(), a.size(), b.data(), b.size(), c3.data());
     }
     if (!std::is_sorted(c3.begin(), c3.end())) {
+        fmt::print(stderr, "merge error\n");
+    }
+
+    {
+        TimerGuard t("merge gpu tiled & circular:");
+        merge_GPU<int, MergeKernel_tiled_circular>(a.data(), a.size(), b.data(), b.size(), c4.data());
+    }
+    if (!std::is_sorted(c4.begin(), c4.end())) {
         fmt::print(stderr, "merge error\n");
     }
 }
@@ -245,6 +259,153 @@ void merge_kernel_tiled(T const* __restrict__ a, int m, T const* __restrict__ b,
     }
 }
 
+template <typename T, size_t TILE_SIZE>
+__device__
+__host__
+int co_rank_circular(int k, T const* __restrict__ a, int a_start, int m, T const* __restrict__ b, int b_start, int n)
+{
+    int i = min(k, m);
+    int j = k - i;
+
+    int i_low = max(0, k - n);
+    int j_low = max(0, k - m);
+
+    bool active = true;
+    
+    while (active) {
+        // if (i < 0 || j < 0) {
+        //     printf("fuck : i = %d, i_low = %d, j = %d, j_low = %d, k = %d\n", i, i_low, j, j_low, k);
+        // }
+        if (i > 0 && j < n && a[(i - 1 + a_start) % TILE_SIZE] > b[(j + b_start) % TILE_SIZE]) {
+            int delta = min((i - i_low + 1) / 2, n - j);
+            // if (delta > i) {
+            //     printf("fuck : delta=%d, i = %d, i_low = %d, j = %d, j_low = %d, k = %d\n", delta, i, i_low, j, j_low, k);
+            // }
+            i -= delta;
+            j_low = j;
+            j += delta;
+        } else if (j > 0 && i < m && b[(j - 1 + b_start) % TILE_SIZE] > a[(i + a_start) % TILE_SIZE]) {
+            int delta = min((j - j_low + 1) / 2, m - i);
+            j -= delta;
+            i_low = i;
+            i += delta;
+        } else {
+            active = false;
+        }
+    }
+
+    return i; // j can be computed by k - i
+}
+
+template <size_t TILE_SIZE, typename T>
+__device__
+__host__
+void merge_sequential_circular(T const* __restrict__ a, int a_start, int m,
+                               T const* __restrict__ b, int b_start, int n, T* c)
+{
+    int i = 0, j = 0, k = 0;
+    while (i < m && j < n) {
+        if (a[i] < b[j]) {
+            c[k++] = a[(i + a_start) % TILE_SIZE];
+            ++i;
+        } else {
+            c[k++] = b[(j + b_start) % TILE_SIZE];
+            ++j
+        }
+    }
+
+    while (i < m) {
+        c[k++] = a[(i + a_start) % TILE_SIZE];
+        ++i;
+    }
+
+    while (j < n) {
+        c[k++] = b[(j + b_start) % TILE_SIZE];
+        ++j;
+    }
+}
+
+template <typename T, int TILE_SIZE>
+__global__
+void merge_kernel_tiled_circular(T const* __restrict__ a, int m, T const* __restrict__ b, int n, T* c)
+{
+    __shared__ T a_S[TILE_SIZE]; // TILE_SIZE can be larger than blockDim.x
+    __shared__ T b_S[TILE_SIZE];
+    
+    int bid = blockIdx.x;
+
+    int c_blk_curr = bid * ((m+n) / gridDim.x) + min(bid, (m+n) % gridDim.x);
+    int c_blk_next = (bid+1) * ((m+n) / gridDim.x) + min(bid+1, (m+n) % gridDim.x);
+    if (threadIdx.x == 0) {
+        a_S[0] = co_rank(c_blk_curr, a, m, b, n);
+        a_S[1] = co_rank(c_blk_next, a, m, b, n);
+    }
+    __syncthreads();
+    int a_blk_curr = a_S[0];
+    int b_blk_curr = c_blk_curr - a_blk_curr;
+    int a_blk_next = a_S[1];
+    int b_blk_next = c_blk_next - a_blk_next;
+
+    int c_blk_len = c_blk_next - c_blk_curr;
+    int a_blk_len = a_blk_next - a_blk_curr;
+    int b_blk_len = b_blk_next - b_blk_curr;
+    
+    int numIters = (c_blk_len + TILE_SIZE - 1) / TILE_SIZE;
+
+    int a_consumed = 0;
+    int b_consumed = 0;
+    int c_completed = 0;
+
+    int a_S_consumed = 0;
+    int b_S_consumed = 0;
+    for (int it = 0; it < numIters; ++it) {
+        // collaboratively load a and b into shared memory:
+        __syncthreads();
+        for (int t = threadIdx.x; t < TILE_SIZE; t += blockDim.x) {
+            if (a_blk_curr + a_consumed + t < a_blk_next) {
+                a_S[(t + a_S_consumed) % TILE_SIZE] = a[a_blk_curr + a_consumed + t];
+            }
+        }
+
+        for (int t = threadIdx.x; t < TILE_SIZE; t += blockDim.x) {
+            if (b_blk_curr + b_consumed + t < b_blk_next) {
+                b_S[(t + b_S_consumed) % TILE_SIZE] = b[b_blk_curr + b_consumed + t];
+            }
+        }
+        __syncthreads();
+
+        int c_thrd_curr = threadIdx.x * (TILE_SIZE / blockDim.x); // assume no remainder
+        int c_thrd_next = (threadIdx.x + 1) * (TILE_SIZE / blockDim.x);
+
+        c_thrd_curr = min(c_thrd_curr, c_blk_len - c_completed);
+        c_thrd_next = min(c_thrd_next, c_blk_len - c_completed);
+
+        int a_thrd_curr = co_rank_circular<T, TILE_SIZE>(c_thrd_curr,
+                                                         a_S, a_S_consumed, min(TILE_SIZE, a_blk_len - a_consumed),
+                                                         b_S, b_S_consumed, min(TILE_SIZE, b_blk_len - b_consumed));
+        int b_thrd_curr = c_thrd_curr - a_thrd_curr;
+
+        int a_thrd_next = co_rank_circular<T, TILE_SIZE>(c_thrd_next,
+                                                         a_S, a_S_consumed, min(TILE_SIZE, a_blk_len - a_consumed),
+                                                         b_S, b_S_consumed, min(TILE_SIZE, b_blk_len - b_consumed));
+        int b_thrd_next = c_thrd_next - a_thrd_next;
+
+        merge_sequential_circular<TILE_SIZE>(&a_S[a_thrd_curr], a_S_consumed, a_thrd_next - a_thrd_curr,
+                                             &b_S[b_thrd_curr], b_S_consumed, b_thrd_next - b_thrd_curr,
+                                             &c[c_blk_curr + c_completed + c_thrd_curr]);
+
+        a_S_consumed = co_rank(min(TILE_SIZE, c_blk_len-c_completed),
+                              a_S, min(TILE_SIZE, a_blk_len - a_consumed),
+                              b_S, min(TILE_SIZE, b_blk_len - b_consumed))
+        a_consumed += a_S_consumed;
+        // a_consumed += co_rank(TILE_SIZE, a_S, TILE_SIZE, b_S, TILE_SIZE);
+        c_completed += TILE_SIZE;
+        b_S_consumed = c_completed - a_consumed
+        b_consumed += b_S_consumed;
+//        __syncthreads();
+    }
+}
+
 template <typename T, typename MergeKernel>
 void merge_GPU(T const* __restrict__ a, int m, T const* __restrict__ b, int n, T* c)
 {
@@ -295,4 +456,10 @@ template<typename T>
 void MergeKernel_tiled::operator()(T const* __restrict__ a, int m, T const* __restrict__ b, int n, T* c)
 {
     merge_kernel_tiled<T, 1024><<<min((m+n+BLOCK_SIZE-1)/BLOCK_SIZE, 1024), BLOCK_SIZE>>>(a, m, b, n, c);
+}
+
+template <typename T>
+void MergeKernel_tiled_circular::operator()(T const* __restrict__ a, int m, T const* __restrict__ b, int n, T* c)
+{
+    merge_kernel_tiled_circular<T, 1024><<<(m+n+BLOCK_SIZE-1)/BLOCK_SIZE, 1024), BLOCK_SIZE>>>(a, m, b, n, c);
 }
