@@ -94,6 +94,9 @@ Mat<float> matMatMult_GPU_threadBlock2x2(Mat<float> const& a, Mat<float> const& 
 template <size_t BLOCK_WIDTH, size_t MoreWork>
 Mat<float> matMatMult_GPU_threadBlock2x2_moreWork(Mat<float> const& m1, Mat<float> const& m2);
 
+template <int VEC_LEN, int A_TILE_WIDTH>
+Mat<float> matMatMult_Volkov_Demmel(Mat<float> const& m1, Mat<float> const& m2);
+
 // #define test_func(info, func, m1, m2, refRes)          \
 //     { \
 //     { \
@@ -118,9 +121,9 @@ inline void test_func(std::string const& info, Func func, Mat<T> m1, Mat<T> m2, 
 
 int main(int argc, char** argv)
 {
-    size_t N1 = 2000;
-    size_t N2 = 2000;
-    size_t N3 = 2000;
+    size_t N1 = 2048;
+    size_t N2 = 2048;
+    size_t N3 = 2048;
     if (argc == 4) {
         N1 = std::stoul(argv[1]);
         N2 = std::stoul(argv[2]);
@@ -161,22 +164,30 @@ int main(int argc, char** argv)
         doNotOptimize(res1);
     }
 
-    test_func("GPU tiled 32:", matMatMult_GPU_tiled<float, 32>, m1, m2, res1);
-    test_func("GPU more work x1:", matMatMult_GPU_moreWork<float, 32, 1>, m1, m2, res1);
-    test_func("GPU more work x2:", matMatMult_GPU_moreWork<float, 32, 2>, m1, m2, res1);
-    test_func("GPU more work x4:", matMatMult_GPU_moreWork<float, 32, 4>, m1, m2, res1);
-    test_func("GPU more work x8:", matMatMult_GPU_moreWork<float, 32, 8>, m1, m2, res1);
-    test_func("GPU tiled 16 thread block 2x2:", matMatMult_GPU_threadBlock2x2<16>, m1, m2, res1);
-    test_func("GPU tiled 32 thread block 2x2:", matMatMult_GPU_threadBlock2x2<32>, m1, m2, res1);
-    test_func("GPU tiled 64 thread block 2x2:", matMatMult_GPU_threadBlock2x2<64>, m1, m2, res1);
+    // test_func("GPU tiled 32:", matMatMult_GPU_tiled<float, 32>, m1, m2, res1);
+    // test_func("GPU more work x1:", matMatMult_GPU_moreWork<float, 32, 1>, m1, m2, res1);
+    // test_func("GPU more work x2:", matMatMult_GPU_moreWork<float, 32, 2>, m1, m2, res1);
+    // test_func("GPU more work x4:", matMatMult_GPU_moreWork<float, 32, 4>, m1, m2, res1);
+    // test_func("GPU more work x8:", matMatMult_GPU_moreWork<float, 32, 8>, m1, m2, res1);
+    // test_func("GPU tiled 16 thread block 2x2:", matMatMult_GPU_threadBlock2x2<16>, m1, m2, res1);
+    // test_func("GPU tiled 32 thread block 2x2:", matMatMult_GPU_threadBlock2x2<32>, m1, m2, res1);
+    // test_func("GPU tiled 64 thread block 2x2:", matMatMult_GPU_threadBlock2x2<64>, m1, m2, res1);
     
     test_func("GPU tiled 32 thread block 2x2 more work x2:", matMatMult_GPU_threadBlock2x2_moreWork<32, 2>, m1, m2, res1);
     test_func("GPU tiled 32 thread block 2x2 more work x4:", matMatMult_GPU_threadBlock2x2_moreWork<32, 4>, m1, m2, res1);
     test_func("GPU tiled 32 thread block 2x2 more work x8:", matMatMult_GPU_threadBlock2x2_moreWork<32, 8>, m1, m2, res1);
 
-    test_func("GPU tiled 32 thread block 1x2 more work x2:", matMatMult_GPU_threadBlock1x2_moreWork<32, 2>, m1, m2, res1);
-    test_func("GPU tiled 32 thread block 1x2 more work x4:", matMatMult_GPU_threadBlock1x2_moreWork<32, 4>, m1, m2, res1);
-    test_func("GPU tiled 32 thread block 1x2 more work x8:", matMatMult_GPU_threadBlock1x2_moreWork<32, 8>, m1, m2, res1);
+    test_func("Volkov & Demmel 64x16 (origin):", matMatMult_Volkov_Demmel<64, 16>, m1, m2, res1);
+    test_func("Volkov & Demmel 32x32:", matMatMult_Volkov_Demmel<32, 32>, m1, m2, res1);
+    test_func("Volkov & Demmel 64x32:", matMatMult_Volkov_Demmel<64, 32>, m1, m2, res1);
+    test_func("Volkov & Demmel 128x32:", matMatMult_Volkov_Demmel<128, 32>, m1, m2, res1);
+    test_func("Volkov & Demmel 128x64:", matMatMult_Volkov_Demmel<128, 64>, m1, m2, res1);
+
+    test_func("Volkov & Demmel 256x32:", matMatMult_Volkov_Demmel<256, 32>, m1, m2, res1);
+    test_func("Volkov & Demmel 512x32:", matMatMult_Volkov_Demmel<512, 32>, m1, m2, res1);
+    // 256x*: similar performance as 128x*
+    // test_func("Volkov & Demmel 256x32:", matMatMult_Volkov_Demmel<256, 32>, m1, m2, res1);
+    // test_func("Volkov & Demmel 256x64:", matMatMult_Volkov_Demmel<256, 64>, m1, m2, res1);
 }
 
 template <typename T>
@@ -845,6 +856,147 @@ Mat<float> matMatMult_GPU_threadBlock2x2_moreWork(Mat<float> const& m1, Mat<floa
                  std::ceil(res.rows() / p), 1);
     auto start = std::chrono::system_clock::now();
     matMatMultKernel_GPU_threadBlock2x2_moreWork<TILE_WIDTH, MoreWork><<<dimGrid, dimBlock>>>(d_m1, d_m2, d_res, m1.rows(), m1.cols(), m2.cols());
+    cudaDeviceSynchronize();
+    auto end = std::chrono::system_clock::now();
+    fmt::print(stderr, "kernel only time: {}\n", std::chrono::duration<double>(end-start).count());
+
+    if (err = cudaGetLastError();
+        err != cudaSuccess) {
+        std::cerr << "cuda kernel ran incorrectly: " << cudaGetErrorString(err) << "\n";
+    }
+
+    if (err = cudaMemcpy(res.data(), d_res, res.size() * sizeof(float), cudaMemcpyDeviceToHost);
+        err != cudaSuccess) {
+        std::cerr << "cudaMemcpy failed\n";
+    }
+
+    cudaFree(d_m1);
+    cudaFree(d_m2);
+    cudaFree(d_res);
+
+    return res;
+}
+
+
+// a row major version for the matrix multiplication algorithm in [Volkov, Demmel]
+// default (in the paper):
+// thread block dim: 64x1x1
+// C block: 16x64
+// A block: 16x16
+// B block: no tiling
+template <int VEC_LEN, int A_TILE_WIDTH>
+__global__
+void matMatMultKernel_Volkov_Demmel(float const* a, float const* b, float* __restrict c,
+                                    size_t const ni, size_t const nk, size_t const nj)
+{
+    // TODO no bound check now
+    int by = A_TILE_WIDTH * blockIdx.y;
+    int bx = VEC_LEN * blockIdx.x; // blockDim.x == VEC_LEN
+    int tx = threadIdx.x; // [0, VEC_LEN)
+    
+    float cRegs[A_TILE_WIDTH] = {0.0f};
+    __shared__ float aTile[A_TILE_WIDTH][A_TILE_WIDTH+1];
+
+    int aRowBase = by + tx / A_TILE_WIDTH;
+    
+    for (int pk = 0; pk < ceil(nk / float(A_TILE_WIDTH)); ++pk) {
+        // TODO load a into shared mem
+        // a will be transposed
+        // 16/4=4
+        constexpr int REP = A_TILE_WIDTH * A_TILE_WIDTH / VEC_LEN;
+        constexpr int STEP = VEC_LEN / A_TILE_WIDTH;
+        #pragma unroll
+        for (int i = 0; i < REP; ++i) {
+            // a[by + tx/16 + i * 4][pk * 16 + tx % 16]
+            int aRow = aRowBase + i * STEP;
+            int aCol = pk * A_TILE_WIDTH + tx % A_TILE_WIDTH;
+            if (aRow < ni && aCol < nk) {
+                aTile[tx % A_TILE_WIDTH][i * STEP + tx / A_TILE_WIDTH]
+                    = a[aRow * nk + aCol];
+            } else {
+                aTile[tx % A_TILE_WIDTH][i * STEP + tx / A_TILE_WIDTH]
+                    = 0.0f;
+            }
+        }
+
+        __syncthreads();
+        
+        #pragma unroll
+        for (int i = 0; i < A_TILE_WIDTH; ++i) {
+            float bReg;
+            if (pk * A_TILE_WIDTH + i < nk && bx + tx < nj) {
+                bReg = b[(pk * A_TILE_WIDTH + i) * nj + bx + tx];
+            } else {
+                bReg = 0.0f;
+            }
+
+            #pragma unroll
+            for (int j = 0; j < A_TILE_WIDTH; ++j) {
+                cRegs[j] += bReg * aTile[i][j]; // aTile[j][i], j: row, i: col
+            }
+        }
+
+        __syncthreads();
+    }
+    
+    // store back c
+    #pragma unroll
+    for (int i = 0; i < A_TILE_WIDTH; ++i) {
+        if (by + i < ni && bx + tx < nj) {
+            c[(by + i) * nj + bx + tx] = cRegs[i];
+        }
+    }
+}
+
+template <int VEC_LEN, int A_TILE_WIDTH>
+Mat<float> matMatMult_Volkov_Demmel(Mat<float> const& m1, Mat<float> const& m2)
+{
+    if (m1.cols() != m2.rows()) {
+        throw 0;
+    }
+
+    cudaError_t err;
+    Mat<float> res(m1.rows(), m2.cols());
+
+    float* d_m1;
+    if (err = cudaMalloc((void**)&d_m1, m1.size() * sizeof(float));
+        err != cudaSuccess) {
+        std::cerr << "cudaMalloc failed\n";
+        std::cerr << "err is " << cudaGetErrorString(err) << "\n";
+        std::exit(1);
+    }
+
+    float* d_m2;
+    if (err = cudaMalloc((void**)&d_m2, m2.size() * sizeof(float));
+        err != cudaSuccess) {
+        std::cerr << "cudaMalloc failed\n";
+        std::exit(1);
+    }
+
+    float* d_res;
+    if (err = cudaMalloc((void**)&d_res, res.size() * sizeof(float));
+        err != cudaSuccess) {
+        std::cerr << "cudaMalloc failed\n";
+        std::exit(1);
+    }
+
+    if (err = cudaMemcpy(d_m1, m1.data(), m1.size() * sizeof(float), cudaMemcpyHostToDevice);
+        err != cudaSuccess) {
+        std::cerr << "cudaMemcpy failed\n";
+        std::exit(1);
+    }
+    if (err = cudaMemcpy(d_m2, m2.data(), m2.size() * sizeof(float), cudaMemcpyHostToDevice);
+        err != cudaSuccess) {
+        std::cerr << "cudaMemcpy failed\n";
+        std::exit(1);
+    }
+    
+    dim3 dimBlock(VEC_LEN, 1, 1);
+    dim3 dimGrid(std::ceil(res.cols() / float(VEC_LEN)),
+                 std::ceil(res.rows() / float(A_TILE_WIDTH)), 1);
+    
+    auto start = std::chrono::system_clock::now();
+    matMatMultKernel_Volkov_Demmel<VEC_LEN, A_TILE_WIDTH><<<dimGrid, dimBlock>>>(d_m1, d_m2, d_res, m1.rows(), m1.cols(), m2.cols());
     cudaDeviceSynchronize();
     auto end = std::chrono::system_clock::now();
     fmt::print(stderr, "kernel only time: {}\n", std::chrono::duration<double>(end-start).count());
