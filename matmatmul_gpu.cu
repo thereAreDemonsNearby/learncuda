@@ -94,7 +94,7 @@ Mat<float> matMatMult_GPU_threadBlock2x2(Mat<float> const& a, Mat<float> const& 
 template <size_t BLOCK_WIDTH, size_t MoreWork>
 Mat<float> matMatMult_GPU_threadBlock2x2_moreWork(Mat<float> const& m1, Mat<float> const& m2);
 
-template <int VEC_LEN, int A_TILE_WIDTH>
+template <int LDCBLK, int A_TILE_WIDTH, int VEC_LEN=LDCBLK>
 Mat<float> matMatMult_Volkov_Demmel(Mat<float> const& m1, Mat<float> const& m2);
 
 // #define test_func(info, func, m1, m2, refRes)          \
@@ -188,6 +188,15 @@ int main(int argc, char** argv)
     // 256x*: similar performance as 128x*
     // test_func("Volkov & Demmel 256x32:", matMatMult_Volkov_Demmel<256, 32>, m1, m2, res1);
     // test_func("Volkov & Demmel 256x64:", matMatMult_Volkov_Demmel<256, 64>, m1, m2, res1);
+
+    test_func("Volkov & Demmel 128x32 (thrd grp 64):", matMatMult_Volkov_Demmel<128, 32, 64>, m1, m2, res1);
+    test_func("Volkov & Demmel 256x32 (thrd grp 64):", matMatMult_Volkov_Demmel<256, 32, 64>, m1, m2, res1);
+    test_func("Volkov & Demmel 256x32 (thrd grp 128):", matMatMult_Volkov_Demmel<256, 32, 128>, m1, m2, res1);
+    test_func("Volkov & Demmel 512x32 (thrd grp 64):", matMatMult_Volkov_Demmel<512, 32, 64>, m1, m2, res1);
+    test_func("Volkov & Demmel 512x32 (thrd grp 128):", matMatMult_Volkov_Demmel<512, 32, 128>, m1, m2, res1);
+    test_func("Volkov & Demmel 512x32 (thrd grp 256):", matMatMult_Volkov_Demmel<512, 32, 256>, m1, m2, res1);
+    test_func("Volkov & Demmel 512x32 (thrd grp 512):", matMatMult_Volkov_Demmel<512, 32, 512>, m1, m2, res1);
+
 }
 
 template <typename T>
@@ -878,23 +887,27 @@ Mat<float> matMatMult_GPU_threadBlock2x2_moreWork(Mat<float> const& m1, Mat<floa
 }
 
 
-// a row major version for the matrix multiplication algorithm in [Volkov, Demmel]
+// a row major version for the matrix multiplication algorithm in Volkov&Demmel
 // default (in the paper):
 // thread block dim: 64x1x1
 // C block: 16x64
 // A block: 16x16
 // B block: no tiling
-template <int VEC_LEN, int A_TILE_WIDTH>
+template <int LDCBLK, int A_TILE_WIDTH, int VEC_LEN=LDCBLK>
 __global__
 void matMatMultKernel_Volkov_Demmel(float const* a, float const* b, float* __restrict c,
                                     size_t const ni, size_t const nk, size_t const nj)
 {
-    // TODO no bound check now
+    static_assert(LDCBLK % VEC_LEN == 0);
+    static_assert(VEC_LEN % A_TILE_WIDTH == 0 && A_TILE_WIDTH % (VEC_LEN / A_TILE_WIDTH) == 0);
+
+    // constexpr int ITERS = LDCBLK / VEC_LEN;
+    
     int by = A_TILE_WIDTH * blockIdx.y;
-    int bx = VEC_LEN * blockIdx.x; // blockDim.x == VEC_LEN
+    int bx = LDCBLK * blockIdx.x; // blockDim.x == LDCBLK
     int tx = threadIdx.x; // [0, VEC_LEN)
     
-    float cRegs[A_TILE_WIDTH] = {0.0f};
+    float cRegs[LDCBLK / VEC_LEN][A_TILE_WIDTH] = {0.0f};
     __shared__ float aTile[A_TILE_WIDTH][A_TILE_WIDTH+1];
 
     int aRowBase = by + tx / A_TILE_WIDTH;
@@ -920,19 +933,29 @@ void matMatMultKernel_Volkov_Demmel(float const* a, float const* b, float* __res
         }
 
         __syncthreads();
-        
+
         #pragma unroll
         for (int i = 0; i < A_TILE_WIDTH; ++i) {
-            float bReg;
-            if (pk * A_TILE_WIDTH + i < nk && bx + tx < nj) {
-                bReg = b[(pk * A_TILE_WIDTH + i) * nj + bx + tx];
-            } else {
-                bReg = 0.0f;
+            // for (int x = tx; x < LDCBLK; x += VEC_LEN)
+
+            float bRegs[LDCBLK / VEC_LEN];
+            
+            #pragma unroll
+            for (int ix = 0; ix < LDCBLK / VEC_LEN; ++ix) {
+                // float bReg;
+                if (pk * A_TILE_WIDTH + i < nk && bx + tx + ix * VEC_LEN < nj) {
+                    bRegs[ix] = b[(pk * A_TILE_WIDTH + i) * nj + bx + tx + ix * VEC_LEN];
+                } else {
+                    bRegs[ix] = 0.0f;
+                }
             }
 
             #pragma unroll
             for (int j = 0; j < A_TILE_WIDTH; ++j) {
-                cRegs[j] += bReg * aTile[i][j]; // aTile[j][i], j: row, i: col
+                #pragma unroll
+                for (int ix = 0; ix < LDCBLK / VEC_LEN; ++ix) {
+                    cRegs[ix][j] += bRegs[ix] * aTile[i][j]; // aTile[j][i], j: row, i: col
+                }
             }
         }
 
@@ -942,13 +965,15 @@ void matMatMultKernel_Volkov_Demmel(float const* a, float const* b, float* __res
     // store back c
     #pragma unroll
     for (int i = 0; i < A_TILE_WIDTH; ++i) {
-        if (by + i < ni && bx + tx < nj) {
-            c[(by + i) * nj + bx + tx] = cRegs[i];
+        for (int ix = 0; ix < LDCBLK / VEC_LEN; ++ix) {
+            if (by + i < ni && bx + tx + ix * VEC_LEN < nj) {
+                c[(by + i) * nj + bx + tx + ix * VEC_LEN] = cRegs[ix][i];
+            }
         }
     }
 }
 
-template <int VEC_LEN, int A_TILE_WIDTH>
+template <int LDCBLK, int A_TILE_WIDTH, int VEC_LEN>
 Mat<float> matMatMult_Volkov_Demmel(Mat<float> const& m1, Mat<float> const& m2)
 {
     if (m1.cols() != m2.rows()) {
@@ -992,11 +1017,11 @@ Mat<float> matMatMult_Volkov_Demmel(Mat<float> const& m1, Mat<float> const& m2)
     }
     
     dim3 dimBlock(VEC_LEN, 1, 1);
-    dim3 dimGrid(std::ceil(res.cols() / float(VEC_LEN)),
+    dim3 dimGrid(std::ceil(res.cols() / float(LDCBLK)),
                  std::ceil(res.rows() / float(A_TILE_WIDTH)), 1);
     
     auto start = std::chrono::system_clock::now();
-    matMatMultKernel_Volkov_Demmel<VEC_LEN, A_TILE_WIDTH><<<dimGrid, dimBlock>>>(d_m1, d_m2, d_res, m1.rows(), m1.cols(), m2.cols());
+    matMatMultKernel_Volkov_Demmel<LDCBLK, A_TILE_WIDTH, VEC_LEN><<<dimGrid, dimBlock>>>(d_m1, d_m2, d_res, m1.rows(), m1.cols(), m2.cols());
     cudaDeviceSynchronize();
     auto end = std::chrono::system_clock::now();
     fmt::print(stderr, "kernel only time: {}\n", std::chrono::duration<double>(end-start).count());
@@ -1016,4 +1041,71 @@ Mat<float> matMatMult_Volkov_Demmel(Mat<float> const& m1, Mat<float> const& m2)
     cudaFree(d_res);
 
     return res;
+}
+
+// what if I use float2:
+
+template <int LDCBLK, int A_TILE_WIDTH>
+__global__
+void matMatMultKernel_Volkov_Demmel_float2(float const* a, float const* b, float* __restrict c,
+                                           size_t const ni, size_t const nk, size_t const nj)
+{
+    constexpr int VEC_LEN = LDCBLK / 2;
+    int by = A_TILE_WIDTH * blockIdx.y;
+    int bx = LDCBLK * blockIdx.x; // blockDim.x == VEC_LEN
+    int tx = threadIdx.x; // [0, VEC_LEN)
+    
+    float2 cRegs[A_TILE_WIDTH] = {0.0f};
+    __shared__ float aTile[A_TILE_WIDTH][A_TILE_WIDTH+1];
+
+    int aRowBase = by + tx / A_TILE_WIDTH;
+    
+    for (int pk = 0; pk < ceil(nk / float(A_TILE_WIDTH)); ++pk) {
+        // TODO load a into shared mem
+        // a will be transposed
+        // 16/4=4
+        constexpr int REP = A_TILE_WIDTH * A_TILE_WIDTH / VEC_LEN;
+        constexpr int STEP = VEC_LEN / A_TILE_WIDTH;
+        #pragma unroll
+        for (int i = 0; i < REP; ++i) {
+            // a[by + tx/16 + i * 4][pk * 16 + tx % 16]
+            int aRow = aRowBase + i * STEP;
+            int aCol = pk * A_TILE_WIDTH + tx % A_TILE_WIDTH;
+            if (aRow < ni && aCol < nk) {
+                aTile[tx % A_TILE_WIDTH][i * STEP + tx / A_TILE_WIDTH]
+                    = a[aRow * nk + aCol];
+            } else {
+                aTile[tx % A_TILE_WIDTH][i * STEP + tx / A_TILE_WIDTH]
+                    = 0.0f;
+            }
+        }
+
+        __syncthreads();
+        
+        #pragma unroll
+        for (int i = 0; i < A_TILE_WIDTH; ++i) {
+            float2 bReg;
+            // if (pk * A_TILE_WIDTH + i < nk && bx + tx < nj) {
+            bReg = *reinterpret_cast<float2 const*>(&b[(pk * A_TILE_WIDTH + i) * nj + bx + tx * 2]);
+            // } else {
+            //     bReg = 0.0f;
+            // }
+
+            #pragma unroll
+            for (int j = 0; j < A_TILE_WIDTH; ++j) {
+                cRegs[j].x += bReg.x * aTile[i][j]; // aTile[j][i], j: row, i: col
+                cRegs[j].y += bReg.y * aTile[i][j];
+            }
+        }
+
+        __syncthreads();
+    }
+    
+    // store back c
+    #pragma unroll
+    for (int i = 0; i < A_TILE_WIDTH; ++i) {
+        // if (by + i < ni && bx + tx < nj) {
+        *reinterpret_cast<float2*>(&c[(by + i) * nj + bx + tx * 2]) = cRegs[i];
+        // }
+    }
 }
