@@ -930,6 +930,15 @@ void matMatMultKernel_Volkov_Demmel(float const* a, float const* b, float* __res
                 aTile[tx % A_TILE_WIDTH][i * STEP + tx / A_TILE_WIDTH]
                     = 0.0f;
             }
+
+            // what if i don't transpose: slower
+            // if (aRow < ni && aCol < nk) {
+            //     aTile[i * STEP + tx / A_TILE_WIDTH][tx % A_TILE_WIDTH]
+            //         = a[aRow * nk + aCol];
+            // } else {
+            //     aTile[i * STEP + tx / A_TILE_WIDTH][tx % A_TILE_WIDTH]
+            //         = 0.0f;
+            // }
         }
 
         __syncthreads();
