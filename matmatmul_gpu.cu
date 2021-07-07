@@ -4,6 +4,7 @@
 #include <fmt/core.h>
 #include "TimerGuard.h"
 #include <boost/align/aligned_allocator.hpp>
+#include <cublas_v2.h>
 
 template <typename T>
 inline void doNotOptimize(T const& value)
@@ -82,6 +83,8 @@ bool matNearlyEqual(Mat<T> const& m1, Mat<T> const& m2)
 template <typename T>
 Mat<T> matMatMult_GPU_trivial(Mat<T> const& m1, Mat<T> const& m2);
 
+Mat<float> matMatMult_cublas(Mat<float> const& m1, Mat<float> const& m2);
+
 template <typename T, size_t TILE_WIDTH>
 Mat<T> matMatMult_GPU_tiled(Mat<T> const& m1, Mat<T> const& m2);
 
@@ -96,6 +99,11 @@ Mat<float> matMatMult_GPU_threadBlock2x2_moreWork(Mat<float> const& m1, Mat<floa
 
 template <int LDCBLK, int A_TILE_WIDTH, int VEC_LEN=LDCBLK>
 Mat<float> matMatMult_Volkov_Demmel(Mat<float> const& m1, Mat<float> const& m2);
+
+template <size_t TILE_IJ, size_t TILE_K, size_t REGBLK_WIDTH>
+Mat<float> matMatMult_regblk(Mat<float> const& m1, Mat<float> const& m2);
+
+
 
 // #define test_func(info, func, m1, m2, refRes)          \
 //     { \
@@ -172,30 +180,35 @@ int main(int argc, char** argv)
     // test_func("GPU tiled 16 thread block 2x2:", matMatMult_GPU_threadBlock2x2<16>, m1, m2, res1);
     // test_func("GPU tiled 32 thread block 2x2:", matMatMult_GPU_threadBlock2x2<32>, m1, m2, res1);
     // test_func("GPU tiled 64 thread block 2x2:", matMatMult_GPU_threadBlock2x2<64>, m1, m2, res1);
-    
-    test_func("GPU tiled 32 thread block 2x2 more work x2:", matMatMult_GPU_threadBlock2x2_moreWork<32, 2>, m1, m2, res1);
-    test_func("GPU tiled 32 thread block 2x2 more work x4:", matMatMult_GPU_threadBlock2x2_moreWork<32, 4>, m1, m2, res1);
-    test_func("GPU tiled 32 thread block 2x2 more work x8:", matMatMult_GPU_threadBlock2x2_moreWork<32, 8>, m1, m2, res1);
 
-    test_func("Volkov & Demmel 64x16 (origin):", matMatMult_Volkov_Demmel<64, 16>, m1, m2, res1);
-    test_func("Volkov & Demmel 32x32:", matMatMult_Volkov_Demmel<32, 32>, m1, m2, res1);
-    test_func("Volkov & Demmel 64x32:", matMatMult_Volkov_Demmel<64, 32>, m1, m2, res1);
-    test_func("Volkov & Demmel 128x32:", matMatMult_Volkov_Demmel<128, 32>, m1, m2, res1);
-    test_func("Volkov & Demmel 128x64:", matMatMult_Volkov_Demmel<128, 64>, m1, m2, res1);
+    test_func("cublas: :", matMatMult_cublas, m1, m2, res1);
+    
+    // test_func("GPU tiled 32 thread block 2x2 more work x2:", matMatMult_GPU_threadBlock2x2_moreWork<32, 2>, m1, m2, res1);
+    // test_func("GPU tiled 32 thread block 2x2 more work x4:", matMatMult_GPU_threadBlock2x2_moreWork<32, 4>, m1, m2, res1);
+    // test_func("GPU tiled 32 thread block 2x2 more work x8:", matMatMult_GPU_threadBlock2x2_moreWork<32, 8>, m1, m2, res1);
+
+    // test_func("Volkov & Demmel 64x16 (origin):", matMatMult_Volkov_Demmel<64, 16>, m1, m2, res1);
+    // test_func("Volkov & Demmel 32x32:", matMatMult_Volkov_Demmel<32, 32>, m1, m2, res1);
+    // test_func("Volkov & Demmel 64x32:", matMatMult_Volkov_Demmel<64, 32>, m1, m2, res1);
+    // test_func("Volkov & Demmel 128x32:", matMatMult_Volkov_Demmel<128, 32>, m1, m2, res1);
+    // // test_func("Volkov & Demmel 128x64:", matMatMult_Volkov_Demmel<128, 64>, m1, m2, res1);
 
     test_func("Volkov & Demmel 256x32:", matMatMult_Volkov_Demmel<256, 32>, m1, m2, res1);
     test_func("Volkov & Demmel 512x32:", matMatMult_Volkov_Demmel<512, 32>, m1, m2, res1);
+
+
+    test_func("Thread block 16x16, reg block 8x8: ", matMatMult_regblk<128, 8, 8>, m1, m2, res1);
     // 256x*: similar performance as 128x*
     // test_func("Volkov & Demmel 256x32:", matMatMult_Volkov_Demmel<256, 32>, m1, m2, res1);
     // test_func("Volkov & Demmel 256x64:", matMatMult_Volkov_Demmel<256, 64>, m1, m2, res1);
 
-    test_func("Volkov & Demmel 128x32 (thrd grp 64):", matMatMult_Volkov_Demmel<128, 32, 64>, m1, m2, res1);
-    test_func("Volkov & Demmel 256x32 (thrd grp 64):", matMatMult_Volkov_Demmel<256, 32, 64>, m1, m2, res1);
-    test_func("Volkov & Demmel 256x32 (thrd grp 128):", matMatMult_Volkov_Demmel<256, 32, 128>, m1, m2, res1);
-    test_func("Volkov & Demmel 512x32 (thrd grp 64):", matMatMult_Volkov_Demmel<512, 32, 64>, m1, m2, res1);
-    test_func("Volkov & Demmel 512x32 (thrd grp 128):", matMatMult_Volkov_Demmel<512, 32, 128>, m1, m2, res1);
-    test_func("Volkov & Demmel 512x32 (thrd grp 256):", matMatMult_Volkov_Demmel<512, 32, 256>, m1, m2, res1);
-    test_func("Volkov & Demmel 512x32 (thrd grp 512):", matMatMult_Volkov_Demmel<512, 32, 512>, m1, m2, res1);
+    // test_func("Volkov & Demmel 128x32 (thrd grp 64):", matMatMult_Volkov_Demmel<128, 32, 64>, m1, m2, res1);
+    // test_func("Volkov & Demmel 256x32 (thrd grp 64):", matMatMult_Volkov_Demmel<256, 32, 64>, m1, m2, res1);
+    // test_func("Volkov & Demmel 256x32 (thrd grp 128):", matMatMult_Volkov_Demmel<256, 32, 128>, m1, m2, res1);
+    // test_func("Volkov & Demmel 512x32 (thrd grp 64):", matMatMult_Volkov_Demmel<512, 32, 64>, m1, m2, res1);
+    // test_func("Volkov & Demmel 512x32 (thrd grp 128):", matMatMult_Volkov_Demmel<512, 32, 128>, m1, m2, res1);
+    // test_func("Volkov & Demmel 512x32 (thrd grp 256):", matMatMult_Volkov_Demmel<512, 32, 256>, m1, m2, res1);
+    // test_func("Volkov & Demmel 512x32 (thrd grp 512):", matMatMult_Volkov_Demmel<512, 32, 512>, m1, m2, res1);
 
 }
 
@@ -214,6 +227,88 @@ void matMatMultKernel_GPU_trivial(T const* __restrict a, T const* __restrict b,
         }
         res[y * n3 + x] = s;
     }
+}
+
+Mat<float> matMatMult_cublas(Mat<float> const& m1, Mat<float> const& m2)
+{
+    if (m1.cols() != m2.rows()) {
+        throw 0;
+    }
+
+    cudaError_t err;
+    Mat<float> res(m1.rows(), m2.cols());
+
+    float* d_m1;
+    if (err = cudaMalloc((void**)&d_m1, m1.size() * sizeof(float));
+        err != cudaSuccess) {
+        std::cerr << "cudaMalloc failed\n";
+        std::cerr << "err is " << cudaGetErrorString(err) << "\n";
+        std::exit(1);
+    }
+
+    float* d_m2;
+    if (err = cudaMalloc((void**)&d_m2, m2.size() * sizeof(float));
+        err != cudaSuccess) {
+        std::cerr << "cudaMalloc failed\n";
+        std::exit(1);
+    }
+
+    float* d_res;
+    if (err = cudaMalloc((void**)&d_res, res.size() * sizeof(float));
+        err != cudaSuccess) {
+        std::cerr << "cudaMalloc failed\n";
+        std::exit(1);
+    }
+
+    if (err = cudaMemcpy(d_m1, m1.data(), m1.size() * sizeof(float), cudaMemcpyHostToDevice);
+        err != cudaSuccess) {
+        std::cerr << "cudaMemcpy failed\n";
+        std::exit(1);
+    }
+    if (err = cudaMemcpy(d_m2, m2.data(), m2.size() * sizeof(float), cudaMemcpyHostToDevice);
+        err != cudaSuccess) {
+        std::cerr << "cudaMemcpy failed\n";
+        std::exit(1);
+    }
+
+    // initialize cublas
+    cublasHandle_t handle;
+    cublasStatus_t status;
+    if (status = cublasCreate_v2(&handle);
+        status != CUBLAS_STATUS_SUCCESS) {
+        std::cerr << "cublasCreate failed\n";
+        std::exit(1);
+    }
+
+    
+    float alpha = 1.0f;
+    float beta = 0.0f;
+    
+    auto start = std::chrono::system_clock::now();
+
+    cublasSgemm_v2(handle, CUBLAS_OP_N, CUBLAS_OP_N,
+                   m2.cols(), m1.rows(), m1.cols(),
+                   &alpha, d_m2, m2.cols(), d_m1, m1.cols(), &beta, d_res, m2.cols());
+
+    cudaDeviceSynchronize();
+    auto end = std::chrono::system_clock::now();
+    fmt::print(stderr, "kernel only time: {}\n", std::chrono::duration<double>(end-start).count());
+
+    if (err = cudaGetLastError();
+        err != cudaSuccess) {
+        std::cerr << "cuda kernel ran incorrectly: " << cudaGetErrorString(err) << "\n";
+    }
+
+    if (err = cudaMemcpy(res.data(), d_res, res.size() * sizeof(float), cudaMemcpyDeviceToHost);
+        err != cudaSuccess) {
+        std::cerr << "cudaMemcpy failed\n";
+    }
+
+    cudaFree(d_m1);
+    cudaFree(d_m2);
+    cudaFree(d_res);
+
+    return res;   
 }
 
 template <typename T>
@@ -1075,11 +1170,11 @@ void matMatMultKernel_Volkov_Demmel_float2(float const* a, float const* b, float
         // 16/4=4
         constexpr int REP = A_TILE_WIDTH * A_TILE_WIDTH / VEC_LEN;
         constexpr int STEP = VEC_LEN / A_TILE_WIDTH;
+        int aCol = pk * A_TILE_WIDTH + tx % A_TILE_WIDTH;
         #pragma unroll
         for (int i = 0; i < REP; ++i) {
             // a[by + tx/16 + i * 4][pk * 16 + tx % 16]
-            int aRow = aRowBase + i * STEP;
-            int aCol = pk * A_TILE_WIDTH + tx % A_TILE_WIDTH;
+            int aRow = aRowBase + i * STEP;            
             if (aRow < ni && aCol < nk) {
                 aTile[tx % A_TILE_WIDTH][i * STEP + tx / A_TILE_WIDTH]
                     = a[aRow * nk + aCol];
@@ -1117,4 +1212,195 @@ void matMatMultKernel_Volkov_Demmel_float2(float const* a, float const* b, float
         *reinterpret_cast<float2*>(&c[(by + i) * nj + bx + tx * 2]) = cRegs[i];
         // }
     }
+}
+
+template <size_t TILE_IJ, size_t TILE_K, size_t REGBLK_WIDTH>
+__global__
+void matMatMultKernel_regblk(float const* a, float const* b, float* __restrict c,
+                             size_t const ni, size_t const nk, size_t const nj)
+{
+    // no bound check for now
+    static_assert(TILE_IJ % REGBLK_WIDTH == 0);
+    // static_assert(TILE_K % REGBLK_WIDTH == 0);
+    static_assert(REGBLK_WIDTH % 4 == 0, "I want to try float4");
+
+    // assert(nk % 4 == 0);
+    // assert(nj % 4 == 0);
+
+    // float4 tileA[TILE_IJ][TILE_K / 4];
+    // float4 tileB[TILE_K][TILE_IJ / 4];
+    __shared__ float tileA[TILE_K][TILE_IJ];
+    __shared__ float tileB[TILE_K][TILE_IJ];
+
+    int by = blockIdx.y;
+    int bx = blockIdx.x;
+    int ty = threadIdx.y;
+    int tx = threadIdx.x;
+    int flatTid = ty * blockDim.x + tx;
+
+    float cRegs[REGBLK_WIDTH * REGBLK_WIDTH] = {0.0f};
+
+    // if (ty == 0 && tx == 0 && by == 0 && bx == 0) {
+    //     printf("%f %f %f %f\n\n", a[0], a[nk], a[nk * 2], a[nk * 3]);
+    // }
+
+    constexpr int THRDS_IN_TB = (TILE_IJ * TILE_IJ) / (REGBLK_WIDTH * REGBLK_WIDTH);
+    constexpr int LOAD_INSTR_LEN = 4;
+    constexpr int LOAD_REPS = (TILE_IJ * TILE_K) / THRDS_IN_TB;
+    for (int pk = 0; pk < ceil(nk / (double)TILE_K); ++pk) {
+        // load A and B into shared memory:
+        // load A:
+        // int col = flatTid % (TILE_K / LOAD_LEN);
+        // for (int r = 0; r < LOAD_REPS; ++r) {
+        //     int row = flatTid / (TILE_K / LOAD_LEN) + r * (THRDS_IN_TB / (TILE_K / LOAD_LEN));
+        //     tileA[row][col]
+        //         = static_cast<float4 const*>(a)[(by * TILE_IJ + row) * (nk/LOAD_LEN) + pk * (TILE_K / LOAD_LEN) + col];
+        // }
+        // need to transpose A when loading from shared mem, so cannot use float4
+        int col = flatTid % TILE_K;
+        for (int r = 0; r < LOAD_REPS; ++r) {
+            // a[by * TILE_IJ + row][pk * TILE_K + col]
+            int row = flatTid / TILE_K + r * (THRDS_IN_TB / TILE_K);
+            tileA[col][row] = a[(by * TILE_IJ + row) * nk + pk * TILE_K + col]; // transposed
+        }
+        // load B:
+        // col = flatTid % (TILE_IJ / LOAD_LEN);
+        // for (int r = 0; r < LOAD_REPS; ++r) {
+        //     int row = flatTid / (TILE_IJ / LOAD_LEN) + r * (THRDS_IN_TB / (TILE_IJ / LOAD_LEN));
+        //     tileB[row][col]
+        //         = static_cast<float4 const*>(a)[(pk * TILE_IJ + row) * (nj/LOAD_LEN) + bx * (TILE_K / LOAD_LEN) + col];
+        // }
+        col = flatTid % TILE_IJ;
+        for (int r = 0; r < LOAD_REPS; ++r) {
+            int row = flatTid / TILE_IJ + r * (THRDS_IN_TB / TILE_IJ);
+            tileB[row][col] = b[(pk * TILE_K + row) * nj + bx * TILE_IJ + col];
+        }
+        
+        __syncthreads();
+
+        // compute c
+        float4 aRegs[REGBLK_WIDTH / LOAD_INSTR_LEN];
+        float4 bRegs[REGBLK_WIDTH / LOAD_INSTR_LEN];
+        for (int k = 0; k < TILE_K; ++k) { // 8
+            #pragma unroll
+            for (int i = 0; i < REGBLK_WIDTH / LOAD_INSTR_LEN; ++i) { // 2
+                aRegs[i] = *reinterpret_cast<float4*>(&tileA[k][ty * REGBLK_WIDTH + i * LOAD_INSTR_LEN]);
+                // if (pk == 0 && ty == 0 && tx == 0 && by == 0 && bx == 0) {
+                //     printf("%f %f %f %f\n", aRegs[i].x, aRegs[i].y, aRegs[i].z, aRegs[i].w);
+                // }
+            }
+            #pragma unroll
+            for (int i = 0; i < REGBLK_WIDTH / LOAD_INSTR_LEN; ++i) { // 2
+                bRegs[i] = *reinterpret_cast<float4*>(&tileB[k][tx * REGBLK_WIDTH + i * LOAD_INSTR_LEN]);
+            }
+
+            #pragma unroll
+            for (int i = 0; i < REGBLK_WIDTH / LOAD_INSTR_LEN; ++i) { // 2
+                float4 aReg = aRegs[i];
+                #pragma unroll
+                for (int j = 0; j < REGBLK_WIDTH / LOAD_INSTR_LEN; ++j) { // 2
+                    float4 bReg = bRegs[j];
+                    cRegs[(i * LOAD_INSTR_LEN + 0) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 0] += aReg.x * bReg.x;
+                    cRegs[(i * LOAD_INSTR_LEN + 0) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 1] += aReg.x * bReg.y;
+                    cRegs[(i * LOAD_INSTR_LEN + 0) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 2] += aReg.x * bReg.z;
+                    cRegs[(i * LOAD_INSTR_LEN + 0) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 3] += aReg.x * bReg.w;
+
+                    cRegs[(i * LOAD_INSTR_LEN + 1) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 0] += aReg.y * bReg.x;
+                    cRegs[(i * LOAD_INSTR_LEN + 1) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 1] += aReg.y * bReg.y;
+                    cRegs[(i * LOAD_INSTR_LEN + 1) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 2] += aReg.y * bReg.z;
+                    cRegs[(i * LOAD_INSTR_LEN + 1) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 3] += aReg.y * bReg.w;
+
+                    cRegs[(i * LOAD_INSTR_LEN + 2) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 0] += aReg.z * bReg.x;
+                    cRegs[(i * LOAD_INSTR_LEN + 2) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 1] += aReg.z * bReg.y;
+                    cRegs[(i * LOAD_INSTR_LEN + 2) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 2] += aReg.z * bReg.z;
+                    cRegs[(i * LOAD_INSTR_LEN + 2) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 3] += aReg.z * bReg.w;
+
+                    cRegs[(i * LOAD_INSTR_LEN + 3) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 0] += aReg.w * bReg.x;
+                    cRegs[(i * LOAD_INSTR_LEN + 3) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 1] += aReg.w * bReg.y;
+                    cRegs[(i * LOAD_INSTR_LEN + 3) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 2] += aReg.w * bReg.z;
+                    cRegs[(i * LOAD_INSTR_LEN + 3) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 3] += aReg.w * bReg.w;
+                }
+            }
+        }
+        __syncthreads();
+    }
+
+    // write C back
+    // non-coalesced
+    for (int i = 0; i < REGBLK_WIDTH; ++i) {
+        for (int j = 0; j < REGBLK_WIDTH; ++j) {
+            c[(by * TILE_IJ + ty * REGBLK_WIDTH + i) * nj + (bx * TILE_IJ + tx * REGBLK_WIDTH + j)]
+                = cRegs[i * REGBLK_WIDTH + j];
+        }
+    }
+}
+
+template <size_t TILE_IJ, size_t TILE_K, size_t REGBLK_WIDTH>
+Mat<float> matMatMult_regblk(Mat<float> const& m1, Mat<float> const& m2)
+{
+    if (m1.cols() != m2.rows()) {
+        throw 0;
+    }
+
+    cudaError_t err;
+    Mat<float> res(m1.rows(), m2.cols());
+
+    float* d_m1;
+    if (err = cudaMalloc((void**)&d_m1, m1.size() * sizeof(float));
+        err != cudaSuccess) {
+        std::cerr << "cudaMalloc failed\n";
+        std::cerr << "err is " << cudaGetErrorString(err) << "\n";
+        std::exit(1);
+    }
+
+    float* d_m2;
+    if (err = cudaMalloc((void**)&d_m2, m2.size() * sizeof(float));
+        err != cudaSuccess) {
+        std::cerr << "cudaMalloc failed\n";
+        std::exit(1);
+    }
+
+    float* d_res;
+    if (err = cudaMalloc((void**)&d_res, res.size() * sizeof(float));
+        err != cudaSuccess) {
+        std::cerr << "cudaMalloc failed\n";
+        std::exit(1);
+    }
+
+    if (err = cudaMemcpy(d_m1, m1.data(), m1.size() * sizeof(float), cudaMemcpyHostToDevice);
+        err != cudaSuccess) {
+        std::cerr << "cudaMemcpy failed\n";
+        std::exit(1);
+    }
+    if (err = cudaMemcpy(d_m2, m2.data(), m2.size() * sizeof(float), cudaMemcpyHostToDevice);
+        err != cudaSuccess) {
+        std::cerr << "cudaMemcpy failed\n";
+        std::exit(1);
+    }
+
+    dim3 dimBlock(TILE_IJ / REGBLK_WIDTH, TILE_IJ / REGBLK_WIDTH, 1);
+    dim3 dimGrid(std::ceil(res.cols() / double(TILE_IJ)),
+                 std::ceil(res.rows() / double(TILE_IJ)), 1);
+    
+    auto start = std::chrono::system_clock::now();
+    matMatMultKernel_regblk<TILE_IJ, TILE_K, REGBLK_WIDTH><<<dimGrid, dimBlock>>>(d_m1, d_m2, d_res, m1.rows(), m1.cols(), m2.cols());
+    cudaDeviceSynchronize();
+    auto end = std::chrono::system_clock::now();
+    fmt::print(stderr, "kernel only time: {}\n", std::chrono::duration<double>(end-start).count());
+
+    if (err = cudaGetLastError();
+        err != cudaSuccess) {
+        std::cerr << "cuda kernel ran incorrectly: " << cudaGetErrorString(err) << "\n";
+    }
+
+    if (err = cudaMemcpy(res.data(), d_res, res.size() * sizeof(float), cudaMemcpyDeviceToHost);
+        err != cudaSuccess) {
+        std::cerr << "cudaMemcpy failed\n";
+    }
+
+    cudaFree(d_m1);
+    cudaFree(d_m2);
+    cudaFree(d_res);
+
+    return res;    
 }
