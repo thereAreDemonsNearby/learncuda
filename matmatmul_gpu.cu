@@ -197,7 +197,10 @@ int main(int argc, char** argv)
     test_func("Volkov & Demmel 512x32:", matMatMult_Volkov_Demmel<512, 32>, m1, m2, res1);
 
 
-    test_func("Thread block 16x16, reg block 8x8: ", matMatMult_regblk<128, 8, 8>, m1, m2, res1);
+    test_func("Thread block 16x16, reg block 8x8, unroll 8: ", matMatMult_regblk<128, 8, 8>, m1, m2, res1);
+    // test_func("Thread block 16x16, reg block 4x4: ", matMatMult_regblk<128, 8, 4>, m1, m2, res1); // bad performance
+    test_func("Thread block 16x16, reg block 8x8, unroll 16: ", matMatMult_regblk<128, 16, 8>, m1, m2, res1);
+    // test_func("Thread block 16x16, reg block 8x8, unroll 32: ", matMatMult_regblk<128, 32, 8>, m1, m2, res1); // bad performance
     // 256x*: similar performance as 128x*
     // test_func("Volkov & Demmel 256x32:", matMatMult_Volkov_Demmel<256, 32>, m1, m2, res1);
     // test_func("Volkov & Demmel 256x64:", matMatMult_Volkov_Demmel<256, 64>, m1, m2, res1);
@@ -1222,15 +1225,20 @@ void matMatMultKernel_regblk(float const* a, float const* b, float* __restrict c
     // no bound check for now
     static_assert(TILE_IJ % REGBLK_WIDTH == 0);
     // static_assert(TILE_K % REGBLK_WIDTH == 0);
-    static_assert(REGBLK_WIDTH % 4 == 0, "I want to try float4");
+    static_assert(REGBLK_WIDTH % 4 == 0, "try float4");
 
     // assert(nk % 4 == 0);
     // assert(nj % 4 == 0);
 
-    // float4 tileA[TILE_IJ][TILE_K / 4];
-    // float4 tileB[TILE_K][TILE_IJ / 4];
-    __shared__ float tileA[TILE_K][TILE_IJ];
-    __shared__ float tileB[TILE_K][TILE_IJ];
+    // __shared__ float tileA[TILE_K][TILE_IJ+4];
+    // __shared__ float tileB[TILE_K][TILE_IJ];
+
+    // try double-buffering since occupancy is not limited by shared mem usage
+    // seems it's not very useful
+    __shared__ float tileA[2][TILE_K][TILE_IJ+4];
+    __shared__ float tileB[2][TILE_K][TILE_IJ];
+    int shmemId = 0;
+    
 
     int by = blockIdx.y;
     int bx = blockIdx.x;
@@ -1239,29 +1247,19 @@ void matMatMultKernel_regblk(float const* a, float const* b, float* __restrict c
     int flatTid = ty * blockDim.x + tx;
 
     float cRegs[REGBLK_WIDTH * REGBLK_WIDTH] = {0.0f};
-
-    // if (ty == 0 && tx == 0 && by == 0 && bx == 0) {
-    //     printf("%f %f %f %f\n\n", a[0], a[nk], a[nk * 2], a[nk * 3]);
-    // }
-
+    
+    
     constexpr int THRDS_IN_TB = (TILE_IJ * TILE_IJ) / (REGBLK_WIDTH * REGBLK_WIDTH);
-    constexpr int LOAD_INSTR_LEN = 4;
     constexpr int LOAD_REPS = (TILE_IJ * TILE_K) / THRDS_IN_TB;
     for (int pk = 0; pk < ceil(nk / (double)TILE_K); ++pk) {
         // load A and B into shared memory:
         // load A:
-        // int col = flatTid % (TILE_K / LOAD_LEN);
-        // for (int r = 0; r < LOAD_REPS; ++r) {
-        //     int row = flatTid / (TILE_K / LOAD_LEN) + r * (THRDS_IN_TB / (TILE_K / LOAD_LEN));
-        //     tileA[row][col]
-        //         = static_cast<float4 const*>(a)[(by * TILE_IJ + row) * (nk/LOAD_LEN) + pk * (TILE_K / LOAD_LEN) + col];
-        // }
         // need to transpose A when loading from shared mem, so cannot use float4
         int col = flatTid % TILE_K;
         for (int r = 0; r < LOAD_REPS; ++r) {
             // a[by * TILE_IJ + row][pk * TILE_K + col]
             int row = flatTid / TILE_K + r * (THRDS_IN_TB / TILE_K);
-            tileA[col][row] = a[(by * TILE_IJ + row) * nk + pk * TILE_K + col]; // transposed
+            tileA[shmemId][col][row] = a[(by * TILE_IJ + row) * nk + pk * TILE_K + col]; // transposed
         }
         // load B:
         // col = flatTid % (TILE_IJ / LOAD_LEN);
@@ -1273,25 +1271,24 @@ void matMatMultKernel_regblk(float const* a, float const* b, float* __restrict c
         col = flatTid % TILE_IJ;
         for (int r = 0; r < LOAD_REPS; ++r) {
             int row = flatTid / TILE_IJ + r * (THRDS_IN_TB / TILE_IJ);
-            tileB[row][col] = b[(pk * TILE_K + row) * nj + bx * TILE_IJ + col];
+            tileB[shmemId][row][col] = b[(pk * TILE_K + row) * nj + bx * TILE_IJ + col];
         }
         
         __syncthreads();
 
         // compute c
+        // LDS.128 version:
+        constexpr int LOAD_INSTR_LEN = 4;
         float4 aRegs[REGBLK_WIDTH / LOAD_INSTR_LEN];
         float4 bRegs[REGBLK_WIDTH / LOAD_INSTR_LEN];
         for (int k = 0; k < TILE_K; ++k) { // 8
             #pragma unroll
             for (int i = 0; i < REGBLK_WIDTH / LOAD_INSTR_LEN; ++i) { // 2
-                aRegs[i] = *reinterpret_cast<float4*>(&tileA[k][ty * REGBLK_WIDTH + i * LOAD_INSTR_LEN]);
-                // if (pk == 0 && ty == 0 && tx == 0 && by == 0 && bx == 0) {
-                //     printf("%f %f %f %f\n", aRegs[i].x, aRegs[i].y, aRegs[i].z, aRegs[i].w);
-                // }
+                aRegs[i] = *reinterpret_cast<float4*>(&tileA[shmemId][k][ty * REGBLK_WIDTH + i * LOAD_INSTR_LEN]);
             }
             #pragma unroll
             for (int i = 0; i < REGBLK_WIDTH / LOAD_INSTR_LEN; ++i) { // 2
-                bRegs[i] = *reinterpret_cast<float4*>(&tileB[k][tx * REGBLK_WIDTH + i * LOAD_INSTR_LEN]);
+                bRegs[i] = *reinterpret_cast<float4*>(&tileB[shmemId][k][tx * REGBLK_WIDTH + i * LOAD_INSTR_LEN]);
             }
 
             #pragma unroll
@@ -1322,7 +1319,66 @@ void matMatMultKernel_regblk(float const* a, float const* b, float* __restrict c
                 }
             }
         }
-        __syncthreads();
+        
+        // LDS.64 version:
+        // constexpr int LOAD_INSTR_LEN = 2; // try LDS.64
+        // float2 aRegs[REGBLK_WIDTH / LOAD_INSTR_LEN];
+        // float2 bRegs[REGBLK_WIDTH / LOAD_INSTR_LEN];
+        // for (int k = 0; k < TILE_K; ++k) { // 8
+        //     #pragma unroll
+        //     for (int i = 0; i < REGBLK_WIDTH / LOAD_INSTR_LEN; ++i) { // 4
+        //         aRegs[i] = *reinterpret_cast<float2*>(&tileA[k][ty * REGBLK_WIDTH + i * LOAD_INSTR_LEN]);
+        //         // if (pk == 0 && ty == 0 && tx == 0 && by == 0 && bx == 0) {
+        //         //     printf("%f %f %f %f\n", aRegs[i].x, aRegs[i].y, aRegs[i].z, aRegs[i].w);
+        //         // }
+        //     }
+        //     #pragma unroll
+        //     for (int i = 0; i < REGBLK_WIDTH / LOAD_INSTR_LEN; ++i) { // 4
+        //         bRegs[i] = *reinterpret_cast<float2*>(&tileB[k][tx * REGBLK_WIDTH + i * LOAD_INSTR_LEN]);
+        //     }
+
+        //     #pragma unroll
+        //     for (int i = 0; i < REGBLK_WIDTH / LOAD_INSTR_LEN; ++i) { // 4
+        //         float2 aReg = aRegs[i];
+        //         #pragma unroll
+        //         for (int j = 0; j < REGBLK_WIDTH / LOAD_INSTR_LEN; ++j) { // 4
+        //             float2 bReg = bRegs[j];
+        //             cRegs[(i * LOAD_INSTR_LEN + 0) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 0] += aReg.x * bReg.x;
+        //             cRegs[(i * LOAD_INSTR_LEN + 0) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 1] += aReg.x * bReg.y;
+        //             cRegs[(i * LOAD_INSTR_LEN + 1) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 0] += aReg.y * bReg.x;
+        //             cRegs[(i * LOAD_INSTR_LEN + 1) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 1] += aReg.y * bReg.y;
+        //         }
+        //     }
+        // }
+
+        // 32 version
+        // constexpr int LOAD_INSTR_LEN = 1; // try LDS
+        // float aRegs[REGBLK_WIDTH];
+        // float bRegs[REGBLK_WIDTH];
+        // for (int k = 0; k < TILE_K; ++k) { // 8
+        //     #pragma unroll
+        //     for (int i = 0; i < REGBLK_WIDTH; ++i) { // 4
+        //         aRegs[i] = tileA[k][ty * REGBLK_WIDTH + i];
+        //     }
+        //     #pragma unroll
+        //     for (int i = 0; i < REGBLK_WIDTH; ++i) { // 4
+        //         bRegs[i] = tileB[k][tx * REGBLK_WIDTH + i];
+        //     }
+
+        //     #pragma unroll
+        //     for (int i = 0; i < REGBLK_WIDTH; ++i) { // 4
+        //         float aReg = aRegs[i];
+        //         #pragma unroll
+        //         for (int j = 0; j < REGBLK_WIDTH; ++j) { // 4
+        //             float bReg = bRegs[j];
+        //             cRegs[i * REGBLK_WIDTH + j] += aReg * bReg;
+        //         }
+        //     }
+        // }
+
+        // if double-buffering is used, this __syncthreads() is not needed
+        // __syncthreads();
+        shmemId = 1 - shmemId;
     }
 
     // write C back
