@@ -136,6 +136,8 @@ int main(int argc, char** argv)
         N1 = std::stoul(argv[1]);
         N2 = std::stoul(argv[2]);
         N3 = std::stoul(argv[3]);
+    } else if (argc == 2) {
+        N1 = N2 = N3 = std::stoul(argv[1]);
     }
     std::random_device rd;
     std::default_random_engine dre(rd());
@@ -1224,7 +1226,7 @@ void matMatMultKernel_regblk(float const* a, float const* b, float* __restrict c
 {
     // no bound check for now
     static_assert(TILE_IJ % REGBLK_WIDTH == 0);
-    // static_assert(TILE_K % REGBLK_WIDTH == 0);
+    static_assert(TILE_K % REGBLK_WIDTH == 0);
     static_assert(REGBLK_WIDTH % 4 == 0, "try float4");
 
     // assert(nk % 4 == 0);
@@ -1383,11 +1385,77 @@ void matMatMultKernel_regblk(float const* a, float const* b, float* __restrict c
 
     // write C back
     // non-coalesced
-    for (int i = 0; i < REGBLK_WIDTH; ++i) {
-        for (int j = 0; j < REGBLK_WIDTH; ++j) {
-            c[(by * TILE_IJ + ty * REGBLK_WIDTH + i) * nj + (bx * TILE_IJ + tx * REGBLK_WIDTH + j)]
-                = cRegs[i * REGBLK_WIDTH + j];
+    // for (int i = 0; i < REGBLK_WIDTH; ++i) {
+    //     for (int j = 0; j < REGBLK_WIDTH; ++j) {
+    //         c[(by * TILE_IJ + ty * REGBLK_WIDTH + i) * nj + (bx * TILE_IJ + tx * REGBLK_WIDTH + j)]
+    //             = cRegs[i * REGBLK_WIDTH + j];
+    //     }
+    // }
+
+    // reuse the tile to make the write of C coalesced
+    // because we're using double-buffering, so there are 4*TILE_K*TILE_IJ
+    // need to __syncthreads() first
+    __syncthreads();
+    static_assert(TILE_IJ % (4 * TILE_K) == 0);
+    constexpr int RB = TILE_K / REGBLK_WIDTH;
+    for (int r = 0; r < TILE_IJ / TILE_K; r += 4) {
+        // write C into tile(s)
+        int row = (ty % RB) * REGBLK_WIDTH;
+        int col = tx * REGBLK_WIDTH;
+        if (ty / RB == r) {
+            // A[0]
+            for (int i = 0; i < REGBLK_WIDTH; ++i) {
+                for (int j = 0; j < REGBLK_WIDTH; ++j) {
+                    tileA[0][row + i][col + j] = cRegs[i * REGBLK_WIDTH + j];
+                }
+            }
+        } else if (ty / RB == r + 1) {
+            // A[1]
+            for (int i = 0; i < REGBLK_WIDTH; ++i) {
+                for (int j = 0; j < REGBLK_WIDTH; ++j) {
+                    tileA[1][row + i][col + j] = cRegs[i * REGBLK_WIDTH + j];
+                }
+            }
+        } else if (ty / RB == r + 2) {
+            // B[0]
+            for (int i = 0; i < REGBLK_WIDTH; ++i) {
+                for (int j = 0; j < REGBLK_WIDTH; ++j) {
+                    tileB[0][row + i][col + j] = cRegs[i * REGBLK_WIDTH + j];
+                }
+            }
+        } else if (ty / RB == r + 3) {
+            // B[1]
+            for (int i = 0; i < REGBLK_WIDTH; ++i) {
+                for (int j = 0; j < REGBLK_WIDTH; ++j) {
+                    tileB[1][row + i][col + j] = cRegs[i * REGBLK_WIDTH + j];
+                }
+            }
         }
+        __syncthreads();
+
+        // then cooperatively write the tiles that contain C back to memory
+        col = flatTid % TILE_IJ;
+        // A[0]
+        for (int s = 0; s < LOAD_REPS; ++s) {
+            row = flatTid / TILE_IJ + s * (THRDS_IN_TB / TILE_IJ);
+            c[(by * TILE_IJ + r * TILE_K + 0 * TILE_K + row) * nj + bx * TILE_IJ + col] = tileA[0][row][col];
+        }
+        // A[1]
+        for (int s = 0; s < LOAD_REPS; ++s) {
+            row = flatTid / TILE_IJ + s * (THRDS_IN_TB / TILE_IJ);
+            c[(by * TILE_IJ + r * TILE_K + 1 * TILE_K + row) * nj + bx * TILE_IJ + col] = tileA[1][row][col];
+        }
+        // B[0]
+        for (int s = 0; s < LOAD_REPS; ++s) {
+            row = flatTid / TILE_IJ + s * (THRDS_IN_TB / TILE_IJ);
+            c[(by * TILE_IJ + r * TILE_K + 2 * TILE_K + row) * nj + bx * TILE_IJ + col] = tileB[0][row][col];
+        }
+        // B[1]
+        for (int s = 0; s < LOAD_REPS; ++s) {
+            row = flatTid / TILE_IJ + s * (THRDS_IN_TB / TILE_IJ);
+            c[(by * TILE_IJ + r * TILE_K + 3 * TILE_K + row) * nj + bx * TILE_IJ + col] = tileB[1][row][col];
+        }
+        __syncthreads();
     }
 }
 
