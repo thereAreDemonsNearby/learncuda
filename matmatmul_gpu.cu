@@ -1405,6 +1405,7 @@ void matMatMultKernel_regblk(float const* a, float const* b, float* __restrict c
         if (ty / RB == r) {
             // A[0]
             for (int i = 0; i < REGBLK_WIDTH; ++i) {
+                #pragma unroll
                 for (int j = 0; j < REGBLK_WIDTH; ++j) {
                     tileA[0][row + i][col + j] = cRegs[i * REGBLK_WIDTH + j];
                 }
@@ -1412,6 +1413,7 @@ void matMatMultKernel_regblk(float const* a, float const* b, float* __restrict c
         } else if (ty / RB == r + 1) {
             // A[1]
             for (int i = 0; i < REGBLK_WIDTH; ++i) {
+                #pragma unroll
                 for (int j = 0; j < REGBLK_WIDTH; ++j) {
                     tileA[1][row + i][col + j] = cRegs[i * REGBLK_WIDTH + j];
                 }
@@ -1419,6 +1421,7 @@ void matMatMultKernel_regblk(float const* a, float const* b, float* __restrict c
         } else if (ty / RB == r + 2) {
             // B[0]
             for (int i = 0; i < REGBLK_WIDTH; ++i) {
+                #pragma unroll
                 for (int j = 0; j < REGBLK_WIDTH; ++j) {
                     tileB[0][row + i][col + j] = cRegs[i * REGBLK_WIDTH + j];
                 }
@@ -1426,6 +1429,7 @@ void matMatMultKernel_regblk(float const* a, float const* b, float* __restrict c
         } else if (ty / RB == r + 3) {
             // B[1]
             for (int i = 0; i < REGBLK_WIDTH; ++i) {
+                #pragma unroll
                 for (int j = 0; j < REGBLK_WIDTH; ++j) {
                     tileB[1][row + i][col + j] = cRegs[i * REGBLK_WIDTH + j];
                 }
