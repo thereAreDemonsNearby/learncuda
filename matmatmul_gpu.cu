@@ -1,7 +1,7 @@
 #include <cstddef>
 #include <string>
 #include <random>
-#include <fmt/core.h>
+#include <iostream>
 #include "TimerGuard.h"
 #include <boost/align/aligned_allocator.hpp>
 #include <cublas_v2.h>
@@ -59,19 +59,23 @@ template <typename T>
 bool matNearlyEqual(Mat<T> const& m1, Mat<T> const& m2)
 {
     if (m1.rows() != m2.rows() || m1.cols() != m2.cols()) {
-        fmt::print(stderr, "size wrong\n");
+        // fmt::print(stderr, "size wrong\n");
+        std::cerr << "size wrong\n";
         return false;
     }
 
     for (size_t i = 0; i < m1.rows(); ++i) {
         for (size_t j = 0; j < m1.cols(); ++j) {
             if (std::fabs(m1[i][j] - m2[i][j]) > 0.1) {
-                fmt::print(stderr, "{0} {1}, index[{2}][{3}]\ndump:\n", m1[i][j], m2[i][j], i, j);
+                // fmt::print(stderr, "{0} {1}, index[{2}][{3}]\ndump:\n", m1[i][j], m2[i][j], i, j);
+                std::cerr << m1[i][j] << ' ' << m2[i][j] << " index[" << i << "]" << "[" << j << "]\ndump:\n";
                 for (size_t ii = 0; ii < m1.rows() && ii < 10; ++ii) {
                     for (size_t jj = 0; jj < m1.cols() && jj < 10; ++jj) {
-                        fmt::print(stderr, "[{0}][{1}]:{2} vs {3}\t", ii, jj, m1[ii][jj], m2[ii][jj]);
+                        // fmt::print(stderr, "[{0}][{1}]:{2} vs {3}\t", ii, jj, m1[ii][jj], m2[ii][jj]);
+                        std::cerr << "[" << ii << "]" << "[" << jj << "]: " << m1[ii][jj] << " vs " << m2[ii][jj] << "\n";
                     }
-                    fmt::print(stderr, "\n");
+                    // fmt::print(stderr, "\n");
+                    std::cerr << "\n";
                 }
                 return false;
             }
@@ -124,7 +128,10 @@ inline void test_func(std::string const& info, Func func, Mat<T> m1, Mat<T> m2, 
         res = func(m1, m2);
         doNotOptimize(res);
     }
-    if (!matNearlyEqual(res, refRes)) { fmt::print(stderr, "result error\n"); }
+    if (!matNearlyEqual(res, refRes)) {
+        // fmt::print(stderr, "result error\n");
+        std::cerr << "result error\n";
+    }
 }
 
 int main(int argc, char** argv)
@@ -297,7 +304,7 @@ Mat<float> matMatMult_cublas(Mat<float> const& m1, Mat<float> const& m2)
 
     cudaDeviceSynchronize();
     auto end = std::chrono::system_clock::now();
-    fmt::print(stderr, "kernel only time: {}\n", std::chrono::duration<double>(end-start).count());
+    std::cerr << "kernel only time: " << std::chrono::duration<double>(end-start).count() << '\n';
 
     if (err = cudaGetLastError();
         err != cudaSuccess) {
@@ -362,7 +369,7 @@ Mat<T> matMatMult_GPU_trivial(Mat<T> const& m1, Mat<T> const& m2)
     matMatMultKernel_GPU_trivial<T><<<dimGrid, dimBlock>>>(d_m1, d_m2, d_res, m1.rows(), m1.cols(), m2.cols());
     cudaDeviceSynchronize();
     auto end = std::chrono::system_clock::now();
-    fmt::print(stderr, "kernel only time: {}\n", std::chrono::duration<double>(end-start).count());
+    std::cerr << "kernel only time: " << std::chrono::duration<double>(end-start).count() << '\n';
 
     if (err = cudaGetLastError();
         err != cudaSuccess) {
@@ -475,7 +482,7 @@ Mat<T> matMatMult_GPU_tiled(Mat<T> const& m1, Mat<T> const& m2)
     matMatMultKernel_GPU_tiled<T, TILE_WIDTH><<<dimGrid, dimBlock>>>(d_m1, d_m2, d_res, m1.rows(), m1.cols(), m2.cols());
     cudaDeviceSynchronize();
     auto end = std::chrono::system_clock::now();
-    fmt::print(stderr, "kernel only time: {}\n", std::chrono::duration<double>(end-start).count());
+    std::cerr << "kernel only time: " << std::chrono::duration<double>(end-start).count() << '\n';
 
     if (err = cudaGetLastError();
         err != cudaSuccess) {
@@ -602,7 +609,7 @@ Mat<T> matMatMult_GPU_moreWork(Mat<T> const& m1, Mat<T> const& m2)
     matMatMultKernel_GPU_moreWork<T, TILE_WIDTH, moreWork><<<dimGrid, dimBlock>>>(d_m1, d_m2, d_res, m1.rows(), m1.cols(), m2.cols());
     cudaDeviceSynchronize();
     auto end = std::chrono::system_clock::now();
-    fmt::print(stderr, "kernel only time: {}\n", std::chrono::duration<double>(end-start).count());
+    std::cerr << "kernel only time: " << std::chrono::duration<double>(end-start).count() << '\n';
 
     if (err = cudaGetLastError();
         err != cudaSuccess) {
@@ -777,7 +784,7 @@ Mat<float> matMatMult_GPU_threadBlock2x2(Mat<float> const& m1, Mat<float> const&
     matMatMultKernel_GPU_threadBlock2x2<TILE_WIDTH><<<dimGrid, dimBlock>>>(d_m1, d_m2, d_res, m1.rows(), m1.cols(), m2.cols());
     cudaDeviceSynchronize();
     auto end = std::chrono::system_clock::now();
-    fmt::print(stderr, "kernel only time: {}\n", std::chrono::duration<double>(end-start).count());
+    std::cerr << "kernel only time: " << std::chrono::duration<double>(end-start).count() << '\n';
 
     if (err = cudaGetLastError();
         err != cudaSuccess) {
@@ -967,7 +974,7 @@ Mat<float> matMatMult_GPU_threadBlock2x2_moreWork(Mat<float> const& m1, Mat<floa
     matMatMultKernel_GPU_threadBlock2x2_moreWork<TILE_WIDTH, MoreWork><<<dimGrid, dimBlock>>>(d_m1, d_m2, d_res, m1.rows(), m1.cols(), m2.cols());
     cudaDeviceSynchronize();
     auto end = std::chrono::system_clock::now();
-    fmt::print(stderr, "kernel only time: {}\n", std::chrono::duration<double>(end-start).count());
+    std::cerr << "kernel only time: " << std::chrono::duration<double>(end-start).count() << '\n';
 
     if (err = cudaGetLastError();
         err != cudaSuccess) {
@@ -1133,7 +1140,7 @@ Mat<float> matMatMult_Volkov_Demmel(Mat<float> const& m1, Mat<float> const& m2)
     matMatMultKernel_Volkov_Demmel<LDCBLK, A_TILE_WIDTH, VEC_LEN><<<dimGrid, dimBlock>>>(d_m1, d_m2, d_res, m1.rows(), m1.cols(), m2.cols());
     cudaDeviceSynchronize();
     auto end = std::chrono::system_clock::now();
-    fmt::print(stderr, "kernel only time: {}\n", std::chrono::duration<double>(end-start).count());
+    std::cerr << "kernel only time: " << std::chrono::duration<double>(end-start).count() << '\n';
 
     if (err = cudaGetLastError();
         err != cudaSuccess) {
@@ -1248,12 +1255,18 @@ void matMatMultKernel_regblk(float const* a, float const* b, float* __restrict c
     int tx = threadIdx.x;
     int flatTid = ty * blockDim.x + tx;
 
+    // 'dynamic' ty & tx
+    int dty = flatTid % 64 / 4;
+    int dtx = ty / 4 * 4 + tx % 4;
+
     float cRegs[REGBLK_WIDTH * REGBLK_WIDTH] = {0.0f};
     
     
     constexpr int THRDS_IN_TB = (TILE_IJ * TILE_IJ) / (REGBLK_WIDTH * REGBLK_WIDTH);
     constexpr int LOAD_REPS = (TILE_IJ * TILE_K) / THRDS_IN_TB;
     for (int pk = 0; pk < ceil(nk / (double)TILE_K); ++pk) {
+
+        constexpr int LOAD_INSTR_WIDTH = 4;
         // load A and B into shared memory:
         // load A:
         // need to transpose A when loading from shared mem, so cannot use float4
@@ -1264,97 +1277,96 @@ void matMatMultKernel_regblk(float const* a, float const* b, float* __restrict c
             tileA[shmemId][col][row] = a[(by * TILE_IJ + row) * nk + pk * TILE_K + col]; // transposed
         }
         // load B:
-        // col = flatTid % (TILE_IJ / LOAD_LEN);
-        // for (int r = 0; r < LOAD_REPS; ++r) {
-        //     int row = flatTid / (TILE_IJ / LOAD_LEN) + r * (THRDS_IN_TB / (TILE_IJ / LOAD_LEN));
-        //     tileB[row][col]
-        //         = static_cast<float4 const*>(a)[(pk * TILE_IJ + row) * (nj/LOAD_LEN) + bx * (TILE_K / LOAD_LEN) + col];
-        // }
-        col = flatTid % TILE_IJ;
-        for (int r = 0; r < LOAD_REPS; ++r) {
-            int row = flatTid / TILE_IJ + r * (THRDS_IN_TB / TILE_IJ);
-            tileB[shmemId][row][col] = b[(pk * TILE_K + row) * nj + bx * TILE_IJ + col];
+        col = flatTid % (TILE_IJ / LOAD_INSTR_WIDTH);
+        for (int r = 0; r < LOAD_REPS / LOAD_INSTR_WIDTH; ++r) {
+            int row = flatTid / (TILE_IJ / LOAD_INSTR_WIDTH) + r * (THRDS_IN_TB / (TILE_IJ / LOAD_INSTR_WIDTH));
+            *reinterpret_cast<float4*>(&tileB[shmemId][row][col * LOAD_INSTR_WIDTH])
+                = reinterpret_cast<float4 const*>(b)[(pk * TILE_K + row) * (nj/LOAD_INSTR_WIDTH) + bx * (TILE_IJ / LOAD_INSTR_WIDTH) + col];
         }
+        // col = flatTid % TILE_IJ;
+        // for (int r = 0; r < LOAD_REPS; ++r) {
+        //     int row = flatTid / TILE_IJ + r * (THRDS_IN_TB / TILE_IJ);
+        //     tileB[shmemId][row][col] = b[(pk * TILE_K + row) * nj + bx * TILE_IJ + col];
+        // }
         
         __syncthreads();
 
         // compute c
         // LDS.128 version:
-        constexpr int LOAD_INSTR_LEN = 4;
-        float4 aRegs[REGBLK_WIDTH / LOAD_INSTR_LEN];
-        float4 bRegs[REGBLK_WIDTH / LOAD_INSTR_LEN];
+        float4 aRegs[REGBLK_WIDTH / LOAD_INSTR_WIDTH];
+        float4 bRegs[REGBLK_WIDTH / LOAD_INSTR_WIDTH];
         for (int k = 0; k < TILE_K; ++k) { // 8
             #pragma unroll
-            for (int i = 0; i < REGBLK_WIDTH / LOAD_INSTR_LEN; ++i) { // 2
-                aRegs[i] = *reinterpret_cast<float4*>(&tileA[shmemId][k][ty * REGBLK_WIDTH + i * LOAD_INSTR_LEN]);
+            for (int i = 0; i < REGBLK_WIDTH / LOAD_INSTR_WIDTH; ++i) { // 2
+                aRegs[i] = *reinterpret_cast<float4*>(&tileA[shmemId][k][dty * REGBLK_WIDTH + i * LOAD_INSTR_WIDTH]);
             }
             #pragma unroll
-            for (int i = 0; i < REGBLK_WIDTH / LOAD_INSTR_LEN; ++i) { // 2
-                bRegs[i] = *reinterpret_cast<float4*>(&tileB[shmemId][k][tx * REGBLK_WIDTH + i * LOAD_INSTR_LEN]);
+            for (int i = 0; i < REGBLK_WIDTH / LOAD_INSTR_WIDTH; ++i) { // 2
+                bRegs[i] = *reinterpret_cast<float4*>(&tileB[shmemId][k][dtx * REGBLK_WIDTH + i * LOAD_INSTR_WIDTH]);
             }
 
             #pragma unroll
-            for (int i = 0; i < REGBLK_WIDTH / LOAD_INSTR_LEN; ++i) { // 2
+            for (int i = 0; i < REGBLK_WIDTH / LOAD_INSTR_WIDTH; ++i) { // 2
                 float4 aReg = aRegs[i];
                 #pragma unroll
-                for (int j = 0; j < REGBLK_WIDTH / LOAD_INSTR_LEN; ++j) { // 2
+                for (int j = 0; j < REGBLK_WIDTH / LOAD_INSTR_WIDTH; ++j) { // 2
                     float4 bReg = bRegs[j];
-                    cRegs[(i * LOAD_INSTR_LEN + 0) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 0] += aReg.x * bReg.x;
-                    cRegs[(i * LOAD_INSTR_LEN + 0) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 1] += aReg.x * bReg.y;
-                    cRegs[(i * LOAD_INSTR_LEN + 0) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 2] += aReg.x * bReg.z;
-                    cRegs[(i * LOAD_INSTR_LEN + 0) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 3] += aReg.x * bReg.w;
+                    cRegs[(i * LOAD_INSTR_WIDTH + 0) * REGBLK_WIDTH + j * LOAD_INSTR_WIDTH + 0] += aReg.x * bReg.x;
+                    cRegs[(i * LOAD_INSTR_WIDTH + 0) * REGBLK_WIDTH + j * LOAD_INSTR_WIDTH + 1] += aReg.x * bReg.y;
+                    cRegs[(i * LOAD_INSTR_WIDTH + 0) * REGBLK_WIDTH + j * LOAD_INSTR_WIDTH + 2] += aReg.x * bReg.z;
+                    cRegs[(i * LOAD_INSTR_WIDTH + 0) * REGBLK_WIDTH + j * LOAD_INSTR_WIDTH + 3] += aReg.x * bReg.w;
 
-                    cRegs[(i * LOAD_INSTR_LEN + 1) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 0] += aReg.y * bReg.x;
-                    cRegs[(i * LOAD_INSTR_LEN + 1) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 1] += aReg.y * bReg.y;
-                    cRegs[(i * LOAD_INSTR_LEN + 1) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 2] += aReg.y * bReg.z;
-                    cRegs[(i * LOAD_INSTR_LEN + 1) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 3] += aReg.y * bReg.w;
+                    cRegs[(i * LOAD_INSTR_WIDTH + 1) * REGBLK_WIDTH + j * LOAD_INSTR_WIDTH + 0] += aReg.y * bReg.x;
+                    cRegs[(i * LOAD_INSTR_WIDTH + 1) * REGBLK_WIDTH + j * LOAD_INSTR_WIDTH + 1] += aReg.y * bReg.y;
+                    cRegs[(i * LOAD_INSTR_WIDTH + 1) * REGBLK_WIDTH + j * LOAD_INSTR_WIDTH + 2] += aReg.y * bReg.z;
+                    cRegs[(i * LOAD_INSTR_WIDTH + 1) * REGBLK_WIDTH + j * LOAD_INSTR_WIDTH + 3] += aReg.y * bReg.w;
 
-                    cRegs[(i * LOAD_INSTR_LEN + 2) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 0] += aReg.z * bReg.x;
-                    cRegs[(i * LOAD_INSTR_LEN + 2) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 1] += aReg.z * bReg.y;
-                    cRegs[(i * LOAD_INSTR_LEN + 2) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 2] += aReg.z * bReg.z;
-                    cRegs[(i * LOAD_INSTR_LEN + 2) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 3] += aReg.z * bReg.w;
+                    cRegs[(i * LOAD_INSTR_WIDTH + 2) * REGBLK_WIDTH + j * LOAD_INSTR_WIDTH + 0] += aReg.z * bReg.x;
+                    cRegs[(i * LOAD_INSTR_WIDTH + 2) * REGBLK_WIDTH + j * LOAD_INSTR_WIDTH + 1] += aReg.z * bReg.y;
+                    cRegs[(i * LOAD_INSTR_WIDTH + 2) * REGBLK_WIDTH + j * LOAD_INSTR_WIDTH + 2] += aReg.z * bReg.z;
+                    cRegs[(i * LOAD_INSTR_WIDTH + 2) * REGBLK_WIDTH + j * LOAD_INSTR_WIDTH + 3] += aReg.z * bReg.w;
 
-                    cRegs[(i * LOAD_INSTR_LEN + 3) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 0] += aReg.w * bReg.x;
-                    cRegs[(i * LOAD_INSTR_LEN + 3) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 1] += aReg.w * bReg.y;
-                    cRegs[(i * LOAD_INSTR_LEN + 3) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 2] += aReg.w * bReg.z;
-                    cRegs[(i * LOAD_INSTR_LEN + 3) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 3] += aReg.w * bReg.w;
+                    cRegs[(i * LOAD_INSTR_WIDTH + 3) * REGBLK_WIDTH + j * LOAD_INSTR_WIDTH + 0] += aReg.w * bReg.x;
+                    cRegs[(i * LOAD_INSTR_WIDTH + 3) * REGBLK_WIDTH + j * LOAD_INSTR_WIDTH + 1] += aReg.w * bReg.y;
+                    cRegs[(i * LOAD_INSTR_WIDTH + 3) * REGBLK_WIDTH + j * LOAD_INSTR_WIDTH + 2] += aReg.w * bReg.z;
+                    cRegs[(i * LOAD_INSTR_WIDTH + 3) * REGBLK_WIDTH + j * LOAD_INSTR_WIDTH + 3] += aReg.w * bReg.w;
                 }
             }
         }
         
         // LDS.64 version:
-        // constexpr int LOAD_INSTR_LEN = 2; // try LDS.64
-        // float2 aRegs[REGBLK_WIDTH / LOAD_INSTR_LEN];
-        // float2 bRegs[REGBLK_WIDTH / LOAD_INSTR_LEN];
+        // constexpr int LOAD_INSTR_WIDTH = 2; // try LDS.64
+        // float2 aRegs[REGBLK_WIDTH / LOAD_INSTR_WIDTH];
+        // float2 bRegs[REGBLK_WIDTH / LOAD_INSTR_WIDTH];
         // for (int k = 0; k < TILE_K; ++k) { // 8
         //     #pragma unroll
-        //     for (int i = 0; i < REGBLK_WIDTH / LOAD_INSTR_LEN; ++i) { // 4
-        //         aRegs[i] = *reinterpret_cast<float2*>(&tileA[k][ty * REGBLK_WIDTH + i * LOAD_INSTR_LEN]);
+        //     for (int i = 0; i < REGBLK_WIDTH / LOAD_INSTR_WIDTH; ++i) { // 4
+        //         aRegs[i] = *reinterpret_cast<float2*>(&tileA[k][ty * REGBLK_WIDTH + i * LOAD_INSTR_WIDTH]);
         //         // if (pk == 0 && ty == 0 && tx == 0 && by == 0 && bx == 0) {
         //         //     printf("%f %f %f %f\n", aRegs[i].x, aRegs[i].y, aRegs[i].z, aRegs[i].w);
         //         // }
         //     }
         //     #pragma unroll
-        //     for (int i = 0; i < REGBLK_WIDTH / LOAD_INSTR_LEN; ++i) { // 4
-        //         bRegs[i] = *reinterpret_cast<float2*>(&tileB[k][tx * REGBLK_WIDTH + i * LOAD_INSTR_LEN]);
+        //     for (int i = 0; i < REGBLK_WIDTH / LOAD_INSTR_WIDTH; ++i) { // 4
+        //         bRegs[i] = *reinterpret_cast<float2*>(&tileB[k][tx * REGBLK_WIDTH + i * LOAD_INSTR_WIDTH]);
         //     }
 
         //     #pragma unroll
-        //     for (int i = 0; i < REGBLK_WIDTH / LOAD_INSTR_LEN; ++i) { // 4
+        //     for (int i = 0; i < REGBLK_WIDTH / LOAD_INSTR_WIDTH; ++i) { // 4
         //         float2 aReg = aRegs[i];
         //         #pragma unroll
-        //         for (int j = 0; j < REGBLK_WIDTH / LOAD_INSTR_LEN; ++j) { // 4
+        //         for (int j = 0; j < REGBLK_WIDTH / LOAD_INSTR_WIDTH; ++j) { // 4
         //             float2 bReg = bRegs[j];
-        //             cRegs[(i * LOAD_INSTR_LEN + 0) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 0] += aReg.x * bReg.x;
-        //             cRegs[(i * LOAD_INSTR_LEN + 0) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 1] += aReg.x * bReg.y;
-        //             cRegs[(i * LOAD_INSTR_LEN + 1) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 0] += aReg.y * bReg.x;
-        //             cRegs[(i * LOAD_INSTR_LEN + 1) * REGBLK_WIDTH + j * LOAD_INSTR_LEN + 1] += aReg.y * bReg.y;
+        //             cRegs[(i * LOAD_INSTR_WIDTH + 0) * REGBLK_WIDTH + j * LOAD_INSTR_WIDTH + 0] += aReg.x * bReg.x;
+        //             cRegs[(i * LOAD_INSTR_WIDTH + 0) * REGBLK_WIDTH + j * LOAD_INSTR_WIDTH + 1] += aReg.x * bReg.y;
+        //             cRegs[(i * LOAD_INSTR_WIDTH + 1) * REGBLK_WIDTH + j * LOAD_INSTR_WIDTH + 0] += aReg.y * bReg.x;
+        //             cRegs[(i * LOAD_INSTR_WIDTH + 1) * REGBLK_WIDTH + j * LOAD_INSTR_WIDTH + 1] += aReg.y * bReg.y;
         //         }
         //     }
         // }
 
         // 32 version
-        // constexpr int LOAD_INSTR_LEN = 1; // try LDS
+        // constexpr int LOAD_INSTR_WIDTH = 1; // try LDS
         // float aRegs[REGBLK_WIDTH];
         // float bRegs[REGBLK_WIDTH];
         // for (int k = 0; k < TILE_K; ++k) { // 8
@@ -1400,9 +1412,9 @@ void matMatMultKernel_regblk(float const* a, float const* b, float* __restrict c
     constexpr int RB = TILE_K / REGBLK_WIDTH;
     for (int r = 0; r < TILE_IJ / TILE_K; r += 4) {
         // write C into tile(s)
-        int row = (ty % RB) * REGBLK_WIDTH;
-        int col = tx * REGBLK_WIDTH;
-        if (ty / RB == r) {
+        int row = (dty % RB) * REGBLK_WIDTH;
+        int col = dtx * REGBLK_WIDTH;
+        if (dty / RB == r) {
             // A[0]
             for (int i = 0; i < REGBLK_WIDTH; ++i) {
                 #pragma unroll
@@ -1410,7 +1422,7 @@ void matMatMultKernel_regblk(float const* a, float const* b, float* __restrict c
                     tileA[0][row + i][col + j] = cRegs[i * REGBLK_WIDTH + j];
                 }
             }
-        } else if (ty / RB == r + 1) {
+        } else if (dty / RB == r + 1) {
             // A[1]
             for (int i = 0; i < REGBLK_WIDTH; ++i) {
                 #pragma unroll
@@ -1418,7 +1430,7 @@ void matMatMultKernel_regblk(float const* a, float const* b, float* __restrict c
                     tileA[1][row + i][col + j] = cRegs[i * REGBLK_WIDTH + j];
                 }
             }
-        } else if (ty / RB == r + 2) {
+        } else if (dty / RB == r + 2) {
             // B[0]
             for (int i = 0; i < REGBLK_WIDTH; ++i) {
                 #pragma unroll
@@ -1426,7 +1438,7 @@ void matMatMultKernel_regblk(float const* a, float const* b, float* __restrict c
                     tileB[0][row + i][col + j] = cRegs[i * REGBLK_WIDTH + j];
                 }
             }
-        } else if (ty / RB == r + 3) {
+        } else if (dty / RB == r + 3) {
             // B[1]
             for (int i = 0; i < REGBLK_WIDTH; ++i) {
                 #pragma unroll
@@ -1514,7 +1526,7 @@ Mat<float> matMatMult_regblk(Mat<float> const& m1, Mat<float> const& m2)
     matMatMultKernel_regblk<TILE_IJ, TILE_K, REGBLK_WIDTH><<<dimGrid, dimBlock>>>(d_m1, d_m2, d_res, m1.rows(), m1.cols(), m2.cols());
     cudaDeviceSynchronize();
     auto end = std::chrono::system_clock::now();
-    fmt::print(stderr, "kernel only time: {}\n", std::chrono::duration<double>(end-start).count());
+    std::cerr << "kernel only time: " << std::chrono::duration<double>(end-start).count() << '\n';
 
     if (err = cudaGetLastError();
         err != cudaSuccess) {
